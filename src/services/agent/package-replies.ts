@@ -195,7 +195,7 @@ export async function getPackageSelectionReply(customerId: string, userMessage: 
       data: { service: selectedPackage.name, step: 'awaiting_confirmation' },
     });
 
-    return `${selectedPackage.name} works for ${dayjs(draft.date).format('dddd, MMMM D')} at ${dayjs(draft.dateTimeIso).format('h:mm A')}. The deposit is Ksh ${deposit.toLocaleString()}. If you are happy with that, reply yes and I will send the M-Pesa prompt.`;
+    return `${selectedPackage.name} works for ${dayjs(draft.date).format('dddd, MMMM D')} at ${dayjs(draft.dateTimeIso).format('h:mm A')}. The deposit is Ksh ${deposit.toLocaleString()}. If you are happy with that, reply yes to confirm and receive payment instructions.`;
   }
 
   if (draft?.step && !['collecting_slots', 'service'].includes(draft.step)) return null;
@@ -262,7 +262,7 @@ export async function getSameBookingSlotReply(
     data: { service: packageToUse.name, step: 'awaiting_confirmation' },
   });
 
-  return `${packageToUse.name} works for ${dayjs(draft.date).format('dddd, MMMM D')} at ${dayjs(draft.dateTimeIso).format('h:mm A')}. The deposit is Ksh ${deposit.toLocaleString()}. If you are happy with that, reply yes and I will send the M-Pesa prompt.`;
+  return `${packageToUse.name} works for ${dayjs(draft.date).format('dddd, MMMM D')} at ${dayjs(draft.dateTimeIso).format('h:mm A')}. The deposit is Ksh ${deposit.toLocaleString()}. If you are happy with that, reply yes to confirm and receive payment instructions.`;
 }
 
 export const DEFAULT_PACKAGE_PRICES: Record<string, number> = {

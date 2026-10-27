@@ -40,7 +40,7 @@ export async function buildBookingProcessReply(this: any): Promise<string> {
     '2. Share your preferred date and time. We are closed on Mondays.',
     `3. Choose any optional extras from the same page: ${OFFICIAL_WEBSITE_URLS.packages}`,
     `4. ${depositText}`,
-    '5. Once you confirm the proposal, we send the M-Pesa prompt. Your booking is confirmed after the deposit is received.',
+    '5. Once you confirm the proposal, we share our M-Pesa Till number (670241) to pay the deposit. Share your M-Pesa confirmation message here and a team member will confirm your booking.',
     `6. Come for your session at ${location}.`,
     '7. Pay the remaining balance after your session by M-Pesa or cash.',
     'Edited photos are ready 10 working days after your session and shared through a secure download link.',

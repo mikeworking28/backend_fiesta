@@ -1,8 +1,8 @@
 import prisma from '../../config/prisma';
 import { bookingService } from '../booking/booking.service';
 import { mpesaService } from '../payment/mpesa.service';
-import { SERVICE_DURATIONS } from '../../config/constants';
-import { bookingDateFacts, businessDay, inBusinessTimezone } from '../../utils/time';
+import { DEFAULT_DURATION, SERVICE_DURATIONS } from '../../config/constants';
+import { bookingDateFacts, businessDay, formatCustomerDate, inBusinessTimezone } from '../../utils/time';
 import { buildBookingProposalConfirmation, formatCustomerTime } from './replies';
 import { editionInText } from './reply-voice';
 import { PAYMENT_PROMPT_UNRECORDED_REPLY } from './constants';
@@ -127,14 +127,26 @@ export function extractReceiptCode(message: string): string | null {
   return match ? match[0].toUpperCase() : null;
 }
 
+export function isMpesaConfirmationText(message: string): boolean {
+  const text = message.toLowerCase().replace(/[’`]/g, "'");
+  return (
+    /\b(?:confirmed|mpesa|m-pesa)\b/i.test(text) &&
+    /\b(?:ksh|sent to|paid to|received|buy goods|till|670241|fiesta)\b/i.test(text)
+  );
+}
+
 export function classifyPaymentMessage(message: string): PaymentMessageKind | null {
   const text = message.toLowerCase().replace(/[’`]/g, "'").replace(/\s+/g, ' ').trim();
-  if (!text || text.length > 160) return null;
+  if (!text) return null;
   if (/\b(?:cancel\w*|stop|reschedul\w*|postpone)\b/.test(text)) return null;
+
+  // Receipt code or forwarded M-Pesa SMS
+  if (extractReceiptCode(message) || isMpesaConfirmationText(message)) return 'receipt';
+
+  if (text.length > 160) return null;
 
   if (/\b(?:has ?n'?t|have ?n'?t|did ?n'?t|not|never|no|nothing)\b[^.?!]{0,30}\b(?:arriv\w*|c[ao]me|receiv\w*|got|gotten|get|pop\w*|show\w*|reach\w*|seen?)\b/.test(text)) return 'not_arrived';
   if (/\b(?:i|we)(?:'ve| have)? (?:already |just )?(?:paid|completed (?:the )?payment|entered (?:my |the )?pin|sent (?:you )?(?:the )?(?:money|payment|deposit|cash))\b|\balready paid\b|\bdone paying\b|\bpayment (?:is )?(?:done|made|complete[d]?)\b/.test(text)) return 'paid_claim';
-  if (extractReceiptCode(message) && text.split(' ').length <= 12) return 'receipt';
   if (/\b(?:did|has|have|was|is)\b[^?]{0,25}\b(?:go(?:ne)? through|went through|successful|received|reflect\w*)\b|\bpayment status\b|\bdid you (?:get|receive)\b/.test(text)) return 'status_check';
   if (/\b(?:start (?:again|over|afresh)|begin again|from scratch)\b/.test(text)) return 'restart';
 
@@ -146,20 +158,16 @@ export function classifyPaymentMessage(message: string): PaymentMessageKind | nu
 }
 
 function promptSentReply(s: PaymentSituation, phoneFallback: string, alreadySent: boolean): string {
-  const amount = s.payment ? ` for Ksh ${s.payment.amount.toLocaleString()}` : '';
-  const digits = lastDigits(s.payment?.phone || phoneFallback);
-  const lead = s.payment?.checkoutRequestId
-    ? `M-Pesa has ${alreadySent ? 'already ' : ''}accepted the deposit request${amount} for the number ending ${digits}.`
-    : `The M-Pesa deposit request${amount} for the number ending ${digits} is still being processed.`;
-  return `${lead} If a prompt appears on your phone, enter your M-Pesa PIN there to complete it.${holdLine(s.holdEndsAt)} If it hasn't arrived, reply resend.`;
+  const amount = s.payment ? `Ksh ${s.payment.amount.toLocaleString()}` : 'the Ksh 2,000 deposit';
+  return `To complete your booking, please pay ${amount} via Lipa na M-Pesa: Buy Goods Till Number 670241 (Fiesta House Maternity). Once paid, please paste or forward the M-Pesa confirmation message here and a team member will confirm your booking.`;
 }
 
 function situationReply(s: PaymentSituation, customerId: string): string {
   switch (s.kind) {
     case 'prompt_sent': return promptSentReply(s, customerId, false);
-    case 'prompt_stale': return `The M-Pesa prompt${s.payment ? ` for Ksh ${s.payment.amount.toLocaleString()}` : ''} may have timed out without being completed, and I can't see a payment yet.${holdLine(s.holdEndsAt)} ${resendOffer(s.attempts)}`;
-    case 'cancelled': return `That M-Pesa prompt was cancelled, so no payment was taken.${holdLine(s.holdEndsAt)} ${resendOffer(s.attempts)}`;
-    case 'failed': return `The last M-Pesa prompt did not go through, so no payment was taken.${holdLine(s.holdEndsAt)} ${resendOffer(s.attempts)}`;
+    case 'prompt_stale': return promptSentReply(s, customerId, false);
+    case 'cancelled': return `That booking request was not completed.${holdLine(s.holdEndsAt)} ${resendOffer(s.attempts)}`;
+    case 'failed': return `Payment was not completed.${holdLine(s.holdEndsAt)} ${resendOffer(s.attempts)}`;
     case 'hold_expired': return s.attempts >= MAX_PAYMENT_ATTEMPTS ? exhaustedText()
       : s.lapsed && s.draft?.service ? `Your earlier request for ${editionInText(s.draft.service)} on ${slotText(s.draft)} was not paid, so nothing is booked yet. Reply yes and I'll check the slot is still free, or tell me what you'd like instead.`
       : "Your 15-minute hold on this slot has ended and I can't see a payment. Reply yes and I'll check the slot is still free.";
@@ -176,94 +184,84 @@ function paidReply(s: PaymentSituation): string {
 
 function notArrivedReply(s: PaymentSituation, customerId: string): string {
   if (s.kind !== 'prompt_sent' && s.kind !== 'prompt_stale') return situationReply(s, customerId);
-  const next = s.attempts >= MAX_PAYMENT_ATTEMPTS
-    ? exhaustedText()
-    : `Reply resend and I'll send a new prompt, or reach the studio team on ${STUDIO_CONTACT}.`;
-  return `The payment request is for the number ending ${lastDigits(s.payment?.phone || customerId)}. I can't verify that a prompt reached your phone. Please check that your phone is on, has signal, and that the M-Pesa SIM is active.${holdLine(s.holdEndsAt)} ${next}`;
+  const digits = lastDigits(s.payment?.phone || customerId);
+  return `I can't verify that a prompt reached your phone. Make sure your phone is on with good signal for the number ending ${digits}. Reply resend to try again, pay via Lipa na M-Pesa: Buy Goods Till Number 670241, or call the studio team on ${STUDIO_CONTACT}.${holdLine(s.holdEndsAt)}`;
 }
 
 async function escalateAttemptsExhausted(this: any, customerId: string, s: PaymentSituation): Promise<string> {
-  const draft = s.draft!;
-  await this.escalate(customerId, 'booking', `Payment prompt limit reached: ${s.attempts} M-Pesa prompts for ${draft.service || 'the booking'} on ${draft.date || 'unknown date'} ${draft.time || ''} did not complete (last status: ${s.payment?.status || 'none'}). No further prompts will be sent automatically. Contact the customer to finish the booking.`);
-  return exhaustedText();
+  const context = s.draft ? `${s.draft.service || 'the booking'} on ${s.draft.date || 'unknown date'} ${s.draft.time || ''}` : 'the booking';
+  await this.escalate(customerId, 'booking', `Payment prompt limit reached (${MAX_PAYMENT_ATTEMPTS} M-Pesa prompts) for ${context}. Contact the customer to finish the booking.`);
+  return paymentAttemptsExhaustedReply();
 }
 
 async function recheckExpiredHold(this: any, customerId: string, s: PaymentSituation): Promise<string> {
-  if (s.attempts >= MAX_PAYMENT_ATTEMPTS) return escalateAttemptsExhausted.call(this, customerId, s);
-  const draft = s.draft!;
-  const resetAttempts = s.lapsed ? { version: 1 } : {};
-  const serviceKey = Object.keys(SERVICE_DURATIONS).find((key) => draft.service?.toLowerCase().includes(key));
-  if (draft.date && bookingDateFacts(draft.date).isPast) {
-    await prisma.bookingDraft.update({ where: { id: draft.id, step: 'payment_pending' },
-      data: { step: 'collecting_slots', date: null, time: null, dateTimeIso: null, ...resetAttempts } });
-    return `Your earlier request for ${editionInText(draft.service || '')} on ${slotText(draft)} has lapsed, and no payment was taken. Which date would you like now?`;
+  const draft = s.draft;
+  if (!draft || !draft.date || !draft.service) {
+    return "Your hold has ended. What date would you like for your session?";
   }
-  if (!serviceKey || !draft.date || !draft.time) {
-    return `Your 15-minute hold has ended. The studio team will help you rebook on ${STUDIO_CONTACT}.`;
+  if (bookingDateFacts(draft.date).isPast) {
+    await prisma.bookingDraft.update({
+      where: { id: draft.id },
+      data: { step: 'collecting_slots', date: null, time: null, dateTimeIso: null, version: 1 },
+    }).catch(() => null);
+    return 'Your earlier request has lapsed, and no payment was taken. Which date would you like now?';
   }
-  const slots = await bookingService.getAvailableSlots(draft.date, SERVICE_DURATIONS[serviceKey], undefined, draft.id);
-  const available: string[] = Array.isArray(slots) ? slots : [];
-  if (available.includes(draft.time)) {
-    const deposit = this.getDepositForPackage(await this.getPackageForDeposit(draft.service || ''));
-    await prisma.bookingDraft.update({ where: { id: draft.id, step: 'payment_pending' }, data: { step: 'awaiting_confirmation', ...resetAttempts } });
-    return `Your 15-minute hold ended, but ${slotText(draft)} is still free. ${buildBookingProposalConfirmation(draft.service || '', draft.date, draft.time, deposit)}`;
+
+  const duration = SERVICE_DURATIONS[draft.service] || DEFAULT_DURATION;
+  const availableSlots = await bookingService.getAvailableSlots(draft.date, duration, null, draft.id).catch(() => []);
+
+  if (draft.time && availableSlots.includes(draft.time)) {
+    await prisma.bookingDraft.update({
+      where: { id: draft.id },
+      data: { step: 'awaiting_confirmation', version: 1 },
+    }).catch(() => null);
+    const pkg = await prisma.package.findUnique({ where: { name: draft.service } }).catch(() => null);
+    const deposit = pkg?.deposit || 2000;
+    return `Your 15-minute hold ended, but ${formatCustomerTime(draft.time)} on ${businessDay(draft.date).format('dddd, D MMMM YYYY')} is still free. The deposit is Ksh ${deposit.toLocaleString()}. Reply yes to confirm your booking details and receive payment instructions.`;
   }
-  await prisma.bookingDraft.update({ where: { id: draft.id, step: 'payment_pending' }, data: { step: 'collecting_slots', time: null, dateTimeIso: null, ...resetAttempts } });
-  const alternatives = available.slice(0, 3).map(formatCustomerTime);
-  const next = alternatives.length
-    ? `Available times that day are ${alternatives.join(', ')}. Which would you prefer?`
-    : 'That day is now fully booked. Which other date would suit you?';
-  return `Your 15-minute hold ended and ${slotText(draft)} has since been booked, so no payment prompt was sent. ${editionInText(draft.service || '')} is still selected for you. ${next}`;
+
+  await prisma.bookingDraft.update({
+    where: { id: draft.id },
+    data: { step: 'collecting_slots', time: null, dateTimeIso: null },
+  }).catch(() => null);
+
+  const slotList = availableSlots.length > 0
+    ? `available times on ${formatCustomerDate(draft.date)} are ${availableSlots.map(formatCustomerTime).join(', ')}`
+    : `there are no available slots left on ${formatCustomerDate(draft.date)}`;
+  return `That slot is no longer available. For the ${editionInText(draft.service)}, ${slotList}. Which time would suit you?`;
 }
 
 async function resendPrompt(this: any, customerId: string, s: PaymentSituation): Promise<string> {
   if (s.attempts >= MAX_PAYMENT_ATTEMPTS) return escalateAttemptsExhausted.call(this, customerId, s);
-  const draft = s.draft!;
-  const payment = s.payment;
-  if (!payment) return PAYMENT_PROMPT_UNRECORDED_REPLY;
-  const version = draftVersion(draft);
-
-  // Compare-and-set on the draft version: a duplicate "yes" loses here and never pushes.
-  try {
-    await prisma.bookingDraft.update({
-      where: { id: draft.id, step: 'payment_pending', ...(Number.isInteger(draft.version) ? { version } : {}) },
-      data: { version: version + 1, updatedAt: new Date() },
-    });
-  } catch (error: any) {
-    if (error?.code === 'P2025') return promptSentReply({ ...s, kind: 'prompt_sent' }, customerId, true);
-    throw error;
-  }
-  await prisma.payment.update({ where: { id: payment.id }, data: { status: 'pending', checkoutRequestId: null } });
-
-  let checkoutRequestId: string;
-  try {
-    checkoutRequestId = (await mpesaService.initiateStkPush(customerId, payment.amount, draft.id)).CheckoutRequestID;
-  } catch (error) {
-    console.error('[PAYMENT_RECOVERY] STK resend failed:', error);
-    await prisma.payment.update({ where: { id: payment.id }, data: { status: payment.status, checkoutRequestId: payment.checkoutRequestId ?? null } }).catch(() => {});
-    await prisma.bookingDraft.update({ where: { id: draft.id }, data: { version } }).catch(() => {});
-    return `I couldn't send a new prompt just now. Please try again in a minute, or contact the studio team on ${STUDIO_CONTACT}.`;
-  }
-  try {
-    await prisma.payment.update({ where: { id: payment.id }, data: { status: 'pending', checkoutRequestId } });
-  } catch (error) {
-    console.error('[PAYMENT_RECOVERY] STK resend could not be recorded:', error);
-    return PAYMENT_PROMPT_UNRECORDED_REPLY;
-  }
-  const hold = new Date(Date.now() + PAYMENT_HOLD_MS);
-  return `M-Pesa has accepted a new deposit request for Ksh ${payment.amount.toLocaleString()} for the number ending ${lastDigits(payment.phone || customerId)}. If a prompt appears on your phone, enter your PIN there to complete it.${holdLine(hold)} If no prompt appears, reply "it hasn't arrived".`;
+  const amount = s.payment ? `Ksh ${s.payment.amount.toLocaleString()}` : 'the deposit';
+  return `We do not send automated phone prompts. Please pay ${amount} via Lipa na M-Pesa: Buy Goods Till Number 670241 (Fiesta House Maternity). Once paid, please paste or forward the M-Pesa confirmation message here and a team member will confirm your booking.`;
 }
 
 async function handlePaidClaim(this: any, customerId: string, message: string, s: PaymentSituation): Promise<string> {
   const code = extractReceiptCode(message);
+  const isMessage = isMpesaConfirmationText(message);
   const draft = s.draft;
   const context = draft ? `${draft.service || 'booking'} on ${draft.date || 'unknown date'} ${draft.time || ''}` : 'no open booking draft';
+
+  if (!code && !isMessage) {
+    await this.escalate(customerId, 'booking', `Customer says they paid for ${context}, but no receipt or confirmation message was provided. Receipt code requested; do not confirm until verified.`);
+    return "I can't see the payment yet. If you have the M-Pesa confirmation message, please share the receipt code and the team will verify it.";
+  }
+
+  if (s.payment && code) {
+    await prisma.payment.update({
+      where: { id: s.payment.id },
+      data: { mpesaReceipt: code, updatedAt: new Date() }
+    }).catch((err) => console.error('Failed to save receipt on payment:', err));
+  }
+
   await this.escalate(customerId, 'booking', code
-    ? `Customer shared M-Pesa receipt ${code} for ${context}, but no successful M-Pesa callback is recorded. Verify the receipt before confirming the booking.`
-    : `Customer says they paid for ${context}, but no successful M-Pesa callback is recorded. Receipt code requested; do not confirm until verified.`);
+    ? `Customer shared M-Pesa receipt ${code} for ${context}. Verify the payment and confirm the booking. Message: "${message.slice(0, 300)}"`
+    : `Customer shared M-Pesa confirmation message for ${context}. Verify the payment and confirm the booking. Message: "${message.slice(0, 300)}"`);
+
   return code
-    ? `Thank you. I've passed receipt ${code} to the studio team to verify. Your booking will be confirmed once the payment is verified.`
-    : "I can't see the payment yet. If you have the M-Pesa confirmation message, please share the receipt code and the team will verify it.";
+    ? `Thank you! I've passed receipt ${code} to the studio team to verify. A team member will verify your payment and confirm your booking shortly.`
+    : "Thank you! I've received your M-Pesa confirmation message. A team member will verify your payment and confirm your booking shortly.";
 }
 
 export async function handlePaymentRecovery(this: any, customerId: string, message: string, forcedKind?: PaymentMessageKind): Promise<string | null> {

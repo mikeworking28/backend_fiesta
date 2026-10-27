@@ -922,11 +922,17 @@ private getAddonAdviceReply(): string {
   ): boolean {
     if (platform !== 'whatsapp' && platform !== 'web') return false;
 
+    const text = userMessage.toLowerCase();
+
+    const asksBookingHowTo =
+      /\bhow\s+(?:can|do|would)\s+(?:i|we)\s+(?:go\s+about\s+)?(?:book|booking|schedule|reserve)\s+(?:a|an|the|my|our|for|at|with)\b|\bhow\s+to\s+(?:book|schedule|reserve)\b|\b(?:booking|reservation)\s+(?:process|procedure|steps)\b|\b(?:process|procedure|steps)\s+(?:for|to)\s+(?:book|booking|reserve|schedule)\b/i.test(text);
+
+    // Asking how booking works is not permission to execute a booking.
+    if (asksBookingHowTo) return false;
     if (this.messageContainsExplicitDateSignal(userMessage) || this.messageContainsExplicitTimeSignal(userMessage)) {
       return true;
     }
 
-    const text = userMessage.toLowerCase();
     if (this.isDecliningOptionalAddons(userMessage, history)) {
       return true;
     }
@@ -1736,9 +1742,9 @@ private getSystemPrompt(
 
 You are the virtual assistant for Fiesta House Maternity, a luxury maternity, newborn, and family photography studio in Parklands, Nairobi.
 
-Your purpose is to have natural, warm and helpful conversations with customers and to help them with Fiesta House services, sessions, bookings and studio policies.
+Your purpose is to deliver a luxury, high-end experience: calm, precise, and polished, with controlled warmth. You are elegant, confident, and helpful—never chatty or gushing—while assisting customers with Fiesta House services, sessions, bookings and studio policies.
 
-Conversation process (internal; do not narrate): First understand what the customer is actually saying and respond to that. Use the full conversation history for context. Decide whether a tool is needed. Be warm and conversational, but do not force the conversation toward booking. Only guide the customer toward a booking or another business action when their message or the conversation naturally calls for it.
+Conversation process (internal; do not narrate): First understand what the customer is actually saying and respond to that. Use the full conversation history for context. Decide whether a tool is needed. Be poised, elegant, and composed with controlled warmth, never forcing the conversation toward booking. Only guide the customer toward a booking or another business action when their message or the conversation naturally calls for it.
 
 Business Context and Customer History:
 ${businessContext}
@@ -1793,9 +1799,11 @@ B2. BOOKING FLOW, IN THIS EXACT ORDER - never skip or reorder a step:
 
     d) Only now call 'propose_booking'. This only tells the customer the deposit amount - it does NOT charge anything or send any payment prompt. STOP THERE and wait.
 
-    e) Only after the customer explicitly replies yes/confirm/go ahead in their OWN next message do you call 'confirm_booking', which is what actually sends the M-Pesa payment prompt. NEVER call propose_booking and confirm_booking in the same turn, even if the customer's message sounds enthusiastic.
+    e) Only after the customer explicitly replies yes/confirm/go ahead in their OWN next message do you call 'confirm_booking', which provides the M-Pesa Till number payment instructions. NEVER call propose_booking and confirm_booking in the same turn, even if the customer's message sounds enthusiastic.
 
-    f) Once 'confirm_booking' runs, tell the customer they'll get an M-Pesa STK push to enter their PIN, and that the booking is only "provisional" until the deposit is paid - they'll get a confirmation message once payment succeeds.
+    f) Once 'confirm_booking' runs, instruct the customer to pay the deposit via Lipa na M-Pesa: Buy Goods Till Number 670241 (Fiesta House Maternity) and send/paste the M-Pesa confirmation message here. Tell them a team member will verify the payment and confirm the booking.
+
+    g) When the customer sends or pastes their M-Pesa confirmation message (or transaction code), acknowledge it politely and let them know that a team member will verify and confirm their booking shortly. Do not claim the booking is already confirmed until verified by the team.
 
 B3. RESCHEDULING IS TWO STEPS, NEVER SKIP OR COMBINE THEM: if they want to reschedule but haven't given a specific new date/time, DO NOT call any tool - ask them what date/time they want first. Once they've stated a specific new date/time, call 'propose_reschedule' (this only tells them the proposed new date/time - it changes nothing yet), then STOP and wait. Only call 'confirm_reschedule' after they explicitly reply yes/confirm on their OWN later message - never in the same turn as propose_reschedule.
 
@@ -1853,7 +1861,7 @@ If the wording could also reasonably mean "tell me about Fiesta House Maternity"
 
 Do not give a technical explanation of the AI, model, software, backend, or implementation unless the customer specifically asks. Do not use a fixed or scripted response; adapt naturally to the customer's wording and the conversation so far.
 
-D0. NATURAL CONVERSATION: Respond to what the customer actually said before doing anything else. Treat her as a person, not as a booking record. Return greetings naturally when greeted. Respond to feelings or personal context with warmth before giving information. Use her first name naturally when known, but do not force her name into every reply. Mirror Swahili or Sheng when she writes it. Do not turn greetings, thanks, acknowledgements or casual conversation into a booking conversation.
+D0. NATURAL CONVERSATION: Respond to what the customer actually said before doing anything else. Treat her with dignity, respect, and composed warmth—never as a booking record or sales transaction. Return greetings with calm elegance. Respond to feelings or personal context with controlled warmth before giving information. Never be chatty, effusive, or gushing. Use her first name naturally when known, but do not force her name into every reply. Mirror Swahili or Sheng when she writes it. Do not turn greetings, thanks, acknowledgements or casual conversation into a booking conversation.
 
 D0a. CUSTOMER INTENT TAKES PRIORITY: The customer's current message determines the purpose of the reply. Do not introduce unrelated Fiesta House information simply because it is available in Business Context. A greeting should receive a greeting. A casual question should receive a casual answer. A thank-you should be acknowledged. An informational question should be answered directly. Booking guidance should appear only when the customer expresses booking intent or when it is genuinely necessary to answer their request.
 
@@ -2096,7 +2104,7 @@ ${contextString}`;
           type: 'function',
           function: {
             name: 'confirm_booking',
-            description: "Sends the actual M-Pesa deposit payment prompt to the customer's phone. Only call this after propose_booking has already told them the deposit amount AND the customer has explicitly replied yes/confirm/go ahead in their OWN message - never call this in the same turn as propose_booking.",
+            description: "Confirms the booking details and issues the M-Pesa Till number payment instructions to the customer. Only call this after propose_booking has already told them the deposit amount AND the customer has explicitly replied yes/confirm/go ahead in their OWN message - never call this in the same turn as propose_booking.",
             parameters: { type: 'object', properties: {} }
           }
         },
@@ -2210,7 +2218,7 @@ ${contextString}`;
         ? { type: 'function' as const, function: { name: 'get_available_dates' } }
         : 'auto' as const } : {}),
     };
-    let completion = await this.createCompletionWithToolNameGuard(completionParams, allowedToolNames, availableTools);
+    let completion = await this.createCompletionWithToolNameGuard(completionParams, allowedToolNames, allTools);
     let currentResponse = completion.response;
     addUsage(usage, usageFromCompletion(currentResponse, completion.completionCalls));
     completionParams.tool_choice = 'auto';
@@ -2265,13 +2273,13 @@ ${contextString}`;
               if (proposedThisTurn) {
                 toolResponse = `ERROR: You already called propose_booking earlier in this same turn - possibly with different details than what the customer last saw and agreed to. You must stop here and wait for the customer's own separate message explicitly confirming before calling confirm_booking.`;
               } else if (!this.isPaymentConfirmation(userMessage)) {
-                toolResponse = `ERROR: The customer has not explicitly replied yes, confirm, go ahead, or proceed in this message, so the M-Pesa prompt was NOT sent. Ask them to reply yes to confirm the booking.`;
+                toolResponse = `ERROR: The customer has not explicitly replied yes, confirm, go ahead, or proceed in this message, so payment instructions were NOT sent. Ask them to reply yes to confirm the booking.`;
               } else {
                 const expectedDeposit = this.getDepositAmountFromProposalHistory(history);
                 const result = await this.executeConfirmBookingTool(customerId, initialDraftStep, expectedDeposit);
                 if (Number.isInteger(result.depositAmount) && result.depositAmount > 0) verifiedToolDeposits.add(result.depositAmount);
                 confirmedActionThisTurn = true;
-                exactProposalReply = `I've initiated a deposit payment request of Ksh ${result.depositAmount.toLocaleString()} to your phone. Once you enter your M-Pesa PIN and the payment is successful, your booking for ${result.service} on ${result.date} at ${result.time} will be officially confirmed.`;
+                exactProposalReply = `To complete booking ${result.service} on ${result.date} at ${result.time}, please pay the deposit of Ksh ${result.depositAmount.toLocaleString()} via Lipa na M-Pesa: Buy Goods Till Number 670241 (Fiesta House Maternity). Once paid, please paste or forward the M-Pesa confirmation message here and a team member will confirm your booking.`;
                 toolResponse = `${exactProposalReply} This is DONE - do not call any more booking tools this turn.`;
               }
             }
@@ -2416,7 +2424,7 @@ ${contextString}`;
       completion = await this.createCompletionWithToolNameGuard({
         ...completionParams,
         messages,
-      }, allowedToolNames, availableTools, completion.provider);
+      }, allowedToolNames, allTools, completion.provider);
       currentResponse = completion.response;
       addUsage(usage, usageFromCompletion(currentResponse, completion.completionCalls));
     }
@@ -3237,7 +3245,7 @@ ${contextString}`;
         throw error;
       }
       const sessionLabel = result.service ? `your session for ${editionInText(result.service)}` : 'your session';
-      return `M-Pesa has accepted the deposit request of Ksh ${result.depositAmount.toLocaleString()} for the number ending ${customerId.replace(/\D/g, '').slice(-3)}. If a prompt appears on your phone, enter your PIN there to complete it. I'll confirm ${sessionLabel} once the payment goes through. If no prompt appears, reply "it hasn't arrived".`;
+      return `To complete booking ${sessionLabel} on ${businessDay(result.date).format('dddd, D MMMM YYYY')} at ${formatCustomerTime(result.time)}, please pay the deposit of Ksh ${result.depositAmount.toLocaleString()} via Lipa na M-Pesa: Buy Goods Till Number 670241 (Fiesta House Maternity). Once paid, please paste or forward the M-Pesa confirmation message here and a team member will confirm your booking.`;
     }
 
     if (draft.step === 'reschedule_confirm' && this.previousMessageRequestsConfirmation(history)) {

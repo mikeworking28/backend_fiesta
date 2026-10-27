@@ -217,7 +217,7 @@ test('declining the displayed optional additions proceeds to the Bloom proposal 
     history.push({ role: 'assistant', content: buildAdditionsReply(2000) });
     assert.equal(agent.isDecliningOptionalAddons(normalizeQuotes(answer), history), true, answer);
     const reply = await say(answer);
-    assert.equal(reply, 'Your details for the Bloom edition are ready for Tuesday, 13 October 2026 at 2:00 PM. The deposit is Ksh 2,000. Reply yes if you would like me to send the M-Pesa prompt. Your booking is confirmed once the deposit is received.');
+    assert.equal(reply, 'Your details for the Bloom edition are ready for Tuesday, 13 October 2026 at 2:00 PM. The deposit is Ksh 2,000. Reply yes to confirm your booking details and receive payment instructions.');
     assert.equal(state.proposals.length, 1);
     assert.deepEqual(state.notes, []);
     assert.deepEqual(state.insights, ['system:addons-decided:v1:muse-draft']);
@@ -252,7 +252,7 @@ test('self makeup selection, name collection, then deposit proposal do not repea
   assert.match(replies[0], /^Noted for your session: Extra professional makeup \(Ksh 3,500\)\./);
   assert.ok(replies[0].includes(STEP_QUESTIONS.need_name));
   assert.equal(state.draft.name, 'Maryanne');
-  assert.equal(replies[1], 'Your details for the Muse edition are ready for Friday, 9 October 2026 at 2:00 PM. The deposit is Ksh 2,000. Reply yes if you would like me to send the M-Pesa prompt. Your booking is confirmed once the deposit is received.');
+  assert.equal(replies[1], 'Your details for the Muse edition are ready for Friday, 9 October 2026 at 2:00 PM. The deposit is Ksh 2,000. Reply yes to confirm your booking details and receive payment instructions.');
   assert.deepEqual(state.proposals, [{ name: 'Maryanne', service: 'THE MUSE', dateTime: '2026-10-09T14:00' }]);
   assert.deepEqual(state.notes, ['Extra professional makeup'], 'the extra makeup was explicitly selected for the customer');
   const questions = replies.flatMap((reply) => reply.split('\n').filter((line) => line.endsWith('?')));

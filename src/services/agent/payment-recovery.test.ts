@@ -206,39 +206,33 @@ test('getPaymentSituation reads the draft step and latest payment row', async (c
   assert.equal(await kind(), 'none');
 });
 
-test('pending, then cancelled callback, then retry sends a new prompt as attempt 2', async (context) => {
+test('pending, then cancelled callback, then retry provides Till 670241 instructions', async (context) => {
   const { state, say } = harness(context, { draft: { version: 2 } });
   await paymentController.processMpesaCallback({ CheckoutRequestID: 'ws_CO_1', ResultCode: 1032, ResultDesc: 'Request Cancelled by user.' });
   assert.equal(state.payment.status, 'cancelled');
-  assert.match(state.sent.at(-1) || '', /cancelled.*held until.*Reply yes/s);
-  assert.doesNotMatch(state.sent.at(-1) || '', /\.\./);
 
   const reply = await say('can we retry this');
-  assert.match(reply, /accepted a new deposit request for Ksh 2,000 for the number ending 678/);
-  assert.equal(state.stkPushes, 1);
-  assert.equal(attemptsOf(state.draft), 2);
-  assert.equal(state.payment.status, 'pending');
-  assert.equal(state.payment.checkoutRequestId, 'ws_CO_2');
+  assert.match(reply, /670241/);
+  assert.match(reply, /paste or forward the M-Pesa confirmation message/);
+  assert.equal(state.stkPushes, 0);
 });
 
-test('cancelled twice, then yes resends and never claims the prompt is already sent', async (context) => {
+test('cancelled twice, then yes provides Till payment instructions', async (context) => {
   const { state, say } = harness(context, { draft: { version: 3 }, payment: { status: 'cancelled' } });
   const reply = await say('yes');
-  assert.doesNotMatch(reply, /already sent/i);
-  assert.match(reply, /accepted a new deposit request/);
-  assert.equal(state.stkPushes, 1);
-  assert.equal(attemptsOf(state.draft), 3);
+  assert.match(reply, /670241/);
+  assert.match(reply, /paste or forward the M-Pesa confirmation message/);
   state.payment.status = 'cancelled';
+  state.draft.version = MAX_PAYMENT_ATTEMPTS + 1;
   const lastTime = await say('Kindly do it the last time');
   assert.match(lastTime, /won't send another.*0720 111928/s);
-  assert.equal(state.stkPushes, 1);
 });
 
 test('a young pending request reports accepted without claiming phone delivery or sending again', async (context) => {
   const { state, say } = harness(context, { payment: { updatedAt: new Date(Date.now() - 20_000) } });
   const reply = await say('yes');
-  assert.match(reply, /already accepted the deposit request.*ending 678/);
-  assert.match(reply, /If a prompt appears on your phone/);
+  assert.match(reply, /670241/);
+  assert.match(reply, /paste or forward the M-Pesa confirmation message/);
   assert.doesNotMatch(reply, /sent.*to your phone|booking is confirmed|session.*is booked/i);
   assert.equal(state.stkPushes, 0);
 });
@@ -397,12 +391,20 @@ test('a success callback confirms once and a duplicate callback creates nothing'
   assert.match(await say('did it go through?'), /payment is confirmed/);
 });
 
-test('duplicate yes within 5 seconds sends one STK push', async (context) => {
+test('duplicate yes within 5 seconds returns payment instructions without STK push', async (context) => {
   const { state, say } = harness(context, { payment: { status: 'cancelled' } });
   const replies = await Promise.all([say('yes'), say('yes')]);
-  assert.equal(state.stkPushes, 1);
-  assert.equal(replies.filter((reply) => /accepted a new deposit request/.test(reply)).length, 1);
-  assert.equal(replies.filter((reply) => /already accepted|still being processed/.test(reply)).length, 1);
-  assert.match(await say('yes'), /already accepted/);
-  assert.equal(state.stkPushes, 1);
+  assert.equal(state.stkPushes, 0);
+  assert.ok(replies.every((reply) => /670241/.test(reply)));
+});
+
+test('forwarding full M-Pesa SMS message records receipt and notifies team that member will verify', async (context) => {
+  const { state, say } = harness(context, { payment: { status: 'pending', amount: 2000 } });
+  const mpesaSms = 'QA12BC34DE Confirmed. Ksh2,000.00 sent to Fiesta House Maternity on 27/10/26 at 5:05 PM. New M-PESA balance is Ksh15,450.00. Transaction cost, Ksh0.00.';
+  const reply = await say(mpesaSms);
+  assert.match(reply, /QA12BC34DE/);
+  assert.match(reply, /team member will verify/i);
+  assert.doesNotMatch(reply, /booking is confirmed/i);
+  assert.equal(state.payment.mpesaReceipt, 'QA12BC34DE');
+  assert.ok(state.escalations.some((entry) => /QA12BC34DE/.test(entry)));
 });

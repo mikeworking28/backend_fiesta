@@ -149,26 +149,13 @@ export async function executeConfirmBookingTool(
 
   await bookingDraftService.markPaymentPending(customerId, baseVersion);
 
-  
-  let mpesaResponse: any;
-  try {
-    mpesaResponse = await mpesaService.initiateStkPush(customerId, depositAmount, draft.id);
-  } catch (error: any) {
-    console.error('Failed to initiate M-Pesa STK Push:', error);
-    await prisma.bookingDraft.update({
-      where: { customerId },
-      data: { step: 'awaiting_confirmation', ...(Number.isInteger(draft.version) ? { version: draft.version } : {}) },
-    }).catch((restoreError) => console.error('Failed to restore booking draft after STK push failure:', restoreError));
-    throw new Error(`We couldn't initiate the payment request. Error: ${error.message}`);
-  }
-
   try {
     await prisma.payment.upsert({
       where: { bookingDraftId: draft.id },
       update: {
         amount: depositAmount,
         status: 'pending',
-        checkoutRequestId: mpesaResponse.CheckoutRequestID,
+        checkoutRequestId: null,
         updatedAt: new Date()
       },
       create: {
@@ -176,7 +163,7 @@ export async function executeConfirmBookingTool(
         amount: depositAmount,
         phone: customerId,
         status: 'pending',
-        checkoutRequestId: mpesaResponse.CheckoutRequestID
+        checkoutRequestId: null
       }
     });
 
@@ -187,14 +174,11 @@ export async function executeConfirmBookingTool(
       service: draft.service,
       date: draft.date,
       time: draft.time,
-      checkoutRequestId: mpesaResponse.CheckoutRequestID
+      tillNumber: '670241'
     };
   } catch (error: any) {
-    console.error('Failed to record M-Pesa payment after STK Push:', error);
-    throw Object.assign(
-      new Error(`An M-Pesa prompt may already have been sent to the customer's phone, but it could not be recorded (${error.message}). Do not send another prompt; ask the customer to check their phone first.`),
-      { code: PAYMENT_PROMPT_UNRECORDED }
-    );
+    console.error('Failed to record pending booking payment:', error);
+    throw new Error(`We couldn't set up the payment details (${error.message}). Please try confirming again.`);
   }
 }
 
