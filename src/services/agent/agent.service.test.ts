@@ -354,6 +354,28 @@ test('resolves package follow-ups from the previous assistant turn', () => {
   assert.equal(conversationFlows.isPackageInclusionFollowUp('what does each come with', []), false);
 });
 
+test('how-to-book questions do not expose action tools', () => {
+  const intentAgent = new AgentService() as any;
+
+  assert.equal(
+    intentAgent.shouldExposeTools('how can i book for a meet-up', [], 'whatsapp'),
+    false,
+  );
+  assert.equal(
+    intentAgent.shouldExposeTools('How do I book a session?', [], 'whatsapp'),
+    false,
+  );
+  assert.equal(
+    intentAgent.shouldExposeTools('What is the booking process?', [], 'whatsapp'),
+    false,
+  );
+
+  // Explicit booking requests remain eligible for the booking workflow.
+  assert.equal(
+    intentAgent.shouldExposeTools('I want to book a session', [], 'whatsapp'),
+    true,
+  );
+});
 test('omits tool schemas for ordinary informational turns', () => {
   assert.equal(agent.shouldExposeTools('What time do you open?', [], 'whatsapp'), false);
   assert.equal(agent.shouldExposeTools('How much is THE ICON?', [], 'whatsapp'), false);

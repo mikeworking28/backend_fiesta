@@ -398,6 +398,27 @@ export function createMessageRoutes(
       handle: async () => this.getPastAppointmentReply(customerId),
     },
     {
+      name: 'bookingForSomeoneElseFollowUp',
+      when: () => {
+        const lastAssistantMessage = [...history].reverse()
+          .find((entry) => entry.role === 'assistant')?.content || '';
+
+        const clarificationWasAsked =
+          /session just for your sister[\s\S]{0,100}would you both like to be photographed together/i
+            .test(lastAssistantMessage);
+
+        const answer = userMessage.trim();
+
+        const answersForSister =
+          /^(?:(?:it's|it is|the session is)\s+)?(?:just|only)\s+(?:for\s+)?(?:her|my sister)(?:\s+only)?[.! ]*$/i
+            .test(answer);
+
+        return clarificationWasAsked && answersForSister;
+      },
+      handle: () =>
+        "Got it. The session will be just for your sister. What is her full name?",
+    },
+    {
       name: 'bookingForSomeoneElse',
       when: () => this.shouldClarifyBookingForSomeoneElse(userMessage),
       handle: () => this.getBookingForSomeoneElseReply(),

@@ -86,7 +86,7 @@ export function formatCustomerTime(time: string): string {
 }
 
 export function buildBookingProposalConfirmation(service: string, date: string, time: string, deposit: number): string {
-  return `Your details for ${editionInText(service)} are ready for ${businessDay(date).format('dddd, D MMMM YYYY')} at ${formatCustomerTime(time)}. The deposit is Ksh ${deposit.toLocaleString()}. Reply yes if you would like me to send the M-Pesa prompt. Your booking is confirmed once the deposit is received.`;
+  return `Your details for ${editionInText(service)} are ready for ${businessDay(date).format('dddd, D MMMM YYYY')} at ${formatCustomerTime(time)}. The deposit is Ksh ${deposit.toLocaleString()}. Reply yes to confirm your booking details and receive payment instructions. Your booking is confirmed once the deposit is received.`;
 }
 
 export function buildRescheduleProposalConfirmation(service: string, date: string, time: string): string {
@@ -103,7 +103,7 @@ export function buildPackageDepositProposal(
   time: string,
   deposit: number
 ): string {
-  return `${service} works for ${date} at ${formatCustomerTime(time)}. The deposit is Ksh ${deposit.toLocaleString()}. If you are happy with that, reply yes and I will send the M-Pesa prompt.`;
+  return `${service} works for ${date} at ${formatCustomerTime(time)}. The deposit is Ksh ${deposit.toLocaleString()}. If you are happy with that, reply yes to confirm and receive payment instructions.`;
 }
 
 export function buildCancellationProposal(service: string, session: string, refundPosition: string): string {

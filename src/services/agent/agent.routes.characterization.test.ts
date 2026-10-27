@@ -124,6 +124,7 @@ function routeOf(reply: string): string {
   if (/^Which add-on would you like to add/.test(reply)) return 'clarifyNewAddon';
   if (/^Understood! We will keep your original/.test(reply)) return 'rescheduleWithdrawal';
   if (/set the session up for Jane Wanjiku/.test(reply)) return 'recipientName';
+  if (/^Got it\. The session will be just for your sister\. What is her full name\?$/i.test(reply)) return 'bookingForSomeoneElseFollowUp';
   if (/^We work strictly by appointment, so we do not take walk-ins/.test(reply)) return 'walkIn';
   if (/^We are open Tuesday to Sunday/.test(reply)) return 'openingHours';
   if (/^Extra outfits beyond your package are Ksh 4,000/.test(reply)) return 'verifiedFacts';
@@ -195,6 +196,10 @@ const CASES: Case[] = [
   { message: "I didn't receive it", history: [INVOICE_SENT], expected: 'invoice' },
 
   // Someone else / multi-person
+  { message: 'Just for her', history: [assistant('Of course. Is the session just for your sister, or would you both like to be photographed together? Once I know that, I can help with the package, date, and preferred time.')], expected: 'bookingForSomeoneElseFollowUp' },
+  { message: 'Only her', history: [assistant('Of course. Is the session just for your sister, or would you both like to be photographed together? Once I know that, I can help with the package, date, and preferred time.')], expected: 'bookingForSomeoneElseFollowUp' },
+  { message: 'Just for her', expected: 'runAgent', note: 'relative-booking answer requires the clarification context' },
+  { message: 'Jane Wanjiku', history: [assistant('Is the session just for your sister, or would you both like to be photographed together?'), assistant('Got it. The session will be just for your sister. What is her full name?')], expected: 'recipientName' },
   { message: 'I want to book a session for my sister', expected: 'bookingForSomeoneElse' },
   { message: 'Can my sister join the shoot with me?', expected: 'multiPersonBooking' },
 
@@ -357,6 +362,7 @@ test('message route order remains unchanged', () => {
     'invoice',
     'confirmedSessionFollowUp',
     'pastAppointment',
+    'bookingForSomeoneElseFollowUp',
     'bookingForSomeoneElse',
     'multiPersonBooking',
     'lashes',
