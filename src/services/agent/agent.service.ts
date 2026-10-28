@@ -28,7 +28,7 @@ import {
 import { RESCHEDULE_KEYWORD_PATTERN, normalizeQuotes } from './regex';
 import { rememberBookingSlots as storeEarlySlots, carriedOverStale, closedDateReply, earlySlotsExpired, extractStatedSlots, knownSlotsLine, lapsedCarryOver, paymentLapsed, sanitizeSlotValue, sameDayClosedReply, EARLY_SLOT_STEP } from './slot-memory';
 import { addonDetail, addonQuantity, selectedAddons } from './addon-capture';
-import { ADDON_NOTED_PREFIX, ADDON_UNCHANGED_REPLY, ADDON_QUOTED_PRICE_LABEL } from './constants';
+import { ADDON_NOTED_PREFIX, ADDON_UNCHANGED_REPLY, ADDON_QUOTED_PRICE_LABEL, ADDON_BALANCE_REPLY } from './constants';
 import { BUDGET_HANDOFF_REPLY } from './constants';
 import { BRAND_RULES, VOICE_RULES, UNKNOWN_ANSWER_REPLY } from './constants';
 import { editionInText, isCustomerNameQuestion, repeatedCollectionQuestion, savedCustomerNameReply } from './reply-voice';
@@ -1315,6 +1315,16 @@ if (
   private async getCatalogDisplayReply(customerId: string, platform: string, kind: CatalogKind, userMessage: string,
     history: { role: 'user' | 'assistant'; content: string }[]): Promise<string> {
     const linkReply = kind === 'addons' ? ADDON_LINK_REPLY : EDITION_LINK_REPLY;
+    if (kind === 'addons' && !explicitCatalogListRequest(userMessage)) {
+      const named = ADDON_CATALOG.filter((item) => item.match.test(userMessage));
+      if (named.length === 1) {
+        const item = named[0];
+        const price = item.unitPrice > 0
+          ? 'Ksh ' + item.unitPrice.toLocaleString() + (item.quantityFromNote ? ' each' : '')
+          : ADDON_QUOTED_PRICE_LABEL;
+        return item.name + ' (' + price + '): ' + addonDetail(item) + '\n' + ADDON_BALANCE_REPLY + '\nYou can see all the extras here: ' + OFFICIAL_WEBSITE_URLS.packages;
+      }
+    }
     const mentionedEditions = PACKAGE_NAMES_FOR_EXTRACTION.filter(name => new RegExp(`\\b${name.replace(/^THE /, '')}\\b`, 'i').test(userMessage));
     const specificEdition = kind === 'editions' && mentionedEditions.length === 1;
     if (specificEdition) {
@@ -1782,6 +1792,7 @@ A10. NO INVENTED CREDENTIALS OR OFFERS: never claim a licence, registration, cer
 
 A11. IDENTITY: you are the virtual assistant of Fiesta House Maternity, an AI, not a person. Never claim or imply that you are human, and never give yourself a human name. If asked whether you are a bot or a real person, say plainly that you are the studio's virtual assistant and that the studio team is available for anything she would like a person for.
 
+A12. NO FALSE RESERVATIONS OR LINKS: never say a slot is reserved, held, locked in or secured; only a paid deposit secures a slot. There is no payment link. Payment is an M-Pesa prompt that is sent only after the booking proposal has been shown and she replies yes. Never say you will send a payment link or that something will be sent shortly.
 LINK-FIRST CATALOG: For editions, packages and optional add-ons share ${OFFICIAL_WEBSITE_URLS.packages}, not the whole catalog, including repeated generic requests. Keep all catalog knowledge for specific-item answers, comparisons and booking calculations. Answer one item or compare two briefly, then append the link. Only list the catalog when the customer explicitly asks for it in this chat or cannot open the link. A bare yes, show me, or reference to the studio is not a request for a full list in chat. Do not change prices, deposits or selected add-ons.
 
 LEGEND INCLUSION HOLD: The public page does not list a Legend wig, while local data does. Do not assert that a wig is included or excluded with Legend, even if retrieval says otherwise. Withhold that inclusion until the owner confirms; say the team will confirm the remaining inclusions. Other verified Legend details may still be answered.
@@ -1830,6 +1841,7 @@ C5. MISSED CALLS / UNREACHABLE STAFF: If a customer says they called the studio 
 
 [D] CONVERSATION STYLE
 
+D0. WARMTH AND UNDERSTANDING: Behave like a smart, attentive human host, not a script. Work out what she actually means, including typos, Swahili, Sheng and half-finished thoughts, and answer that first. Open by acknowledging her as a person: return greetings in kind, respond to feelings or personal context (body size, nerves, due date, excitement) with one sincere, specific sentence before giving any information, use her first name naturally when known without forcing it into every reply, and mirror the language she writes in. Be warm and gracious without gushing. Do not turn greetings, thanks, acknowledgements or casual conversation into a booking conversation. Vary your wording so you never sound like a template.
 ${BRAND_RULES}
 ${VOICE_RULES}
 ${EMOJI_PROMPT_RULE}
@@ -1861,7 +1873,6 @@ If the wording could also reasonably mean "tell me about Fiesta House Maternity"
 
 Do not give a technical explanation of the AI, model, software, backend, or implementation unless the customer specifically asks. Do not use a fixed or scripted response; adapt naturally to the customer's wording and the conversation so far.
 
-D0. NATURAL CONVERSATION: Respond to what the customer actually said before doing anything else. Treat her with dignity, respect, and composed warmth—never as a booking record or sales transaction. Return greetings with calm elegance. Respond to feelings or personal context with controlled warmth before giving information. Never be chatty, effusive, or gushing. Use her first name naturally when known, but do not force her name into every reply. Mirror Swahili or Sheng when she writes it. Do not turn greetings, thanks, acknowledgements or casual conversation into a booking conversation.
 
 D0a. CUSTOMER INTENT TAKES PRIORITY: The customer's current message determines the purpose of the reply. Do not introduce unrelated Fiesta House information simply because it is available in Business Context. A greeting should receive a greeting. A casual question should receive a casual answer. A thank-you should be acknowledged. An informational question should be answered directly. Booking guidance should appear only when the customer expresses booking intent or when it is genuinely necessary to answer their request.
 
@@ -2078,9 +2089,10 @@ ${contextString}`;
     const packagePricingLine = includePackagePricing
       ? await this.getPackagePricingLine()
       : undefined;
-    const includeWorkflowRules =
-      this.shouldExposeTools(userMessage, history, platform)
-      || /\b(?:book(?:ing)?|reserve|reservation|schedule|reschedule|cancel|cancellation|availability|available|slots?|appointment|deposit|payment|delivery)\b/i.test(userMessage);
+    const toolsEnabledForTurn =
+      this.shouldExposeTools(userMessage, history, platform);
+    const mentionsWorkflowTopic =
+      /\b(?:book(?:ing)?|reserve|reservation|schedule|reschedule|cancel|cancellation|availability|available|slots?|appointment|deposit|payment|delivery)\b/i.test(userMessage);
 
     const fullSystemPrompt = this.getSystemPrompt(
       fullContext,
@@ -2091,14 +2103,16 @@ ${contextString}`;
       recentConversation
     );
 
-    const systemPrompt = includeWorkflowRules
+    const systemPrompt = toolsEnabledForTurn
       ? fullSystemPrompt
       : fullSystemPrompt.replace(
           /\[B\] TOOL-USE WORKFLOW[\s\S]*?(?=\[C\] BUSINESS KNOWLEDGE)/,
-          '[B] Detailed tool-use workflows omitted for this informational turn.\n\n',
+          mentionsWorkflowTopic
+            ? '[B] INFORMATION-ONLY WORKFLOW GUIDANCE: No booking or action tools are available on this turn. Answer booking-process and appointment questions in plain text from verified context. Do not call or imply that a booking, reschedule, cancellation, payment, or delivery action occurred. If asked how booking works, explain the sequence briefly: choose an edition, provide a preferred date and time, check availability, discuss optional add-ons, review the deposit proposal, then provide M-Pesa instructions only after explicit confirmation. For appointment details, answer from existing booking information rather than treating the question as a reschedule request. Follow the platform capability rules above.\n\n'
+            : '[B] Detailed tool-use workflows omitted for this informational turn.\n\n',
         );
 
-    if (!includeWorkflowRules && systemPrompt === fullSystemPrompt) {
+    if (!toolsEnabledForTurn && systemPrompt === fullSystemPrompt) {
       throw new Error('Could not omit the workflow section from the informational prompt.');
     }
 
@@ -2249,8 +2263,7 @@ ${contextString}`;
       );
     }
 
-    const exposesToolsForTurn =
-      this.shouldExposeTools(userMessage, history, platform);
+    const exposesToolsForTurn = toolsEnabledForTurn;
 
     const lastAssistantForToolSelection =
       [...history].reverse().find((message) => message.role === 'assistant')?.content || '';
@@ -3113,6 +3126,8 @@ ${contextString}`;
     const awaitingConfirmation = this.previousMessageRequestsConfirmation(history);
     const includesThanks = /\b(thanks|thank you|appreciate|appreciated)\b/.test(normalized);
     if (awaitingConfirmation && !includesThanks && /^(?:ok|okay|alright|sawa)$/.test(normalized)) return false;
+    const lastAssistantText = [...history].reverse().find((message) => message.role === 'assistant')?.content || '';
+    if (/\bpayment link\b|\bi['’]ll send you\b|\breserved the\b|\bi['’]ve reserved\b/i.test(lastAssistantText)) return false;
 
     return true;
   }
