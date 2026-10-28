@@ -149,7 +149,7 @@ async function progressReply(this: any, customerId: string, message: string, his
   const dateTimeTurn = Boolean(stated.date || stated.time);
   const declinedNow = this.isDecliningOptionalAddons(message, history);
   const relevant = force || decisionJustSaved || declinedNow || dateTimeTurn || Boolean(stated.name)
-    || /\b(?:okay|ok|yes+|so|ready|go ahead|that it|skip)\b/i.test(message);
+    || /\b(?:okay|ok|yes+|so|ready|go ahead|that it|skip|do it|let'?s do it|go for it|book it|lock it in|proceed|confirm|sounds good|that works|ndio|sawa)\b/i.test(message);
   if (!relevant) return null;
   const draft = await prisma.bookingDraft.findUnique({ where: { customerId } });
   if (!draft || draft.step !== EARLY_SLOT_STEP || earlySlotsExpired(draft) || draft.isForSomeoneElse || !draft.service) return null;
