@@ -1,7 +1,7 @@
 import { EMOJI_PROMPT_RULE } from './emoji-policy';
 
 export const MAX_AGENT_COMPLETION_TOKENS = Math.min(2_500, Math.max(200, Number(process.env.AI_MAX_COMPLETION_TOKENS) || 1500));
-export const MAX_RAG_CONTEXT_CHUNKS = 3;
+export const MAX_RAG_CONTEXT_CHUNKS = 2;
 export const MAX_HISTORY_MESSAGES = 6;
 export const CANCELLATION_PROPOSAL_TTL_MS = 60 * 60 * 1000;
 export const OFFICIAL_WEBSITE_URLS = {
