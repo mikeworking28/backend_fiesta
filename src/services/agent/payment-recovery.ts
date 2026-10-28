@@ -208,7 +208,31 @@ async function recheckExpiredHold(this: any, customerId: string, s: PaymentSitua
   }
 
   const duration = SERVICE_DURATIONS[draft.service] || DEFAULT_DURATION;
-  const availableSlots = await bookingService.getAvailableSlots(draft.date, duration, null, draft.id).catch(() => []);
+  const availableSlotsResult = await bookingService.getAvailableSlots(
+    draft.date,
+    duration,
+    undefined,
+    draft.id,
+  ).catch(() => [] as string[]);
+
+  if (!Array.isArray(availableSlotsResult)) {
+    const availabilityFailure = availableSlotsResult as {
+      status?: string;
+      reason?: string;
+    };
+
+    console.warn('[PAYMENT_RECOVERY] Availability lookup returned a failure result:', {
+      status: availabilityFailure.status,
+      reason: availabilityFailure.reason,
+    });
+
+    throw new Error(
+      availabilityFailure.reason ||
+        'Could not retrieve available slots for payment recovery.',
+    );
+  }
+
+  const availableSlots: string[] = availableSlotsResult;
 
   if (draft.time && availableSlots.includes(draft.time)) {
     await prisma.bookingDraft.update({

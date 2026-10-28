@@ -71,9 +71,14 @@ const openrouter = process.env.OPENROUTER_API_KEY
     })
   : null;
 
+const configuredOpenRouterChatModel =
+  String(process.env.OPENROUTER_CHAT_MODEL || '').trim();
+
 const OPENROUTER_CHAT_MODEL =
-  process.env.OPENROUTER_CHAT_MODEL ||
-  'meta-llama/llama-3.1-8b-instruct:free';
+  configuredOpenRouterChatModel &&
+  configuredOpenRouterChatModel !== 'meta-llama/llama-3.1-8b-instruct:free'
+    ? configuredOpenRouterChatModel
+    : '';
 
 export type ChatProvider =
   | 'groq'
@@ -292,6 +297,51 @@ function isAuthenticationError(error: any): boolean {
   return status === 401 || status === 403;
 }
 
+
+// Keep Groq completion budgets below the configured TPM ceiling.
+// This does not replace prompt reduction; it reduces the reserved output budget.
+function withGroqCompletionBudget(
+  params: Record<string, any>,
+  provider: ChatProvider
+): Record<string, any> {
+  if (provider !== 'groq' && provider !== 'groq2') {
+    return params;
+  }
+
+  const configuredLimit = Number(
+    process.env.GROQ_MAX_COMPLETION_TOKENS
+  );
+
+  const maxAllowed =
+    Number.isFinite(configuredLimit) && configuredLimit > 0
+      ? Math.max(256, Math.min(Math.floor(configuredLimit), 1000))
+      : 900;
+
+  const request = { ...params };
+  let foundBudgetField = false;
+
+  for (const field of [
+    'max_completion_tokens',
+    'max_tokens',
+  ] as const) {
+    if (request[field] !== undefined && request[field] !== null) {
+      const current = Number(request[field]);
+
+      request[field] =
+        Number.isFinite(current) && current > 0
+          ? Math.min(Math.floor(current), maxAllowed)
+          : maxAllowed;
+
+      foundBudgetField = true;
+    }
+  }
+
+  if (!foundBudgetField) {
+    request.max_completion_tokens = maxAllowed;
+  }
+
+  return request;
+}
 export async function createChatCompletion(
   params: any,
   preferredProvider?: ChatProvider,
@@ -366,23 +416,53 @@ export async function createChatCompletion(
 
     if (!client) continue;
 
-    if (
-      Date.now() <
-      (providerCooldownUntil.get(client) || 0)
-    ) {
+    const model = models[provider];
+
+    if (!model) {
+      console.warn('[AI_PROVIDER] Skipping provider: no usable model configured.', {
+        provider,
+      });
       continue;
     }
 
-    const model = models[provider];
+    const cooldownUntil = providerCooldownUntil.get(client) || 0;
+
+    if (Date.now() < cooldownUntil) {
+      console.warn('[AI_PROVIDER] Skipping provider in cooldown:', {
+        provider,
+        cooldownUntil: new Date(cooldownUntil).toISOString(),
+      });
+      continue;
+    }
 
     try {
       completionCalls++;
 
+      const requestParams = withGroqCompletionBudget(
+        sanitizedParams,
+        provider
+      );
+
+      console.info('[AI_PROVIDER] Request starting:', {
+        provider,
+        model,
+        messageCount: Array.isArray(requestParams.messages)
+          ? requestParams.messages.length
+          : 0,
+        toolCount: Array.isArray(requestParams.tools)
+          ? requestParams.tools.length
+          : 0,
+        maxTokens:
+          requestParams.max_completion_tokens ??
+          requestParams.max_tokens ??
+          null,
+      });
+
       const response =
         await client.chat.completions.create({
-          ...sanitizedParams,
+          ...requestParams,
           model,
-        });
+        } as any);
 
       await recordModelUsage(
         provider,

@@ -16,7 +16,7 @@ import { draftVersion, MAX_PAYMENT_ATTEMPTS } from './payment-recovery';
 export async function executeProposeBookingTool(this: any, customerId: string, name: string, service: string, date: string) {
   name = sanitizeSlotValue(name || '');
   if (!isUsableName(name) || !/[a-z]/i.test(name)) {
-    throw new Error('Customer name is required before proposing a booking. Ask the customer for their full name first.');
+    throw new Error('A usable customer name is required before proposing a booking. A single first name is sufficient; ask only if no usable name is available.');
   }
 
   let customer = await prisma.customer.findUnique({ where: { id: customerId } });

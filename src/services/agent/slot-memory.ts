@@ -565,6 +565,105 @@ export async function rememberBookingSlots(
     }
   }
 
+  // A customer may answer the name question while an agreed booking is
+  // awaiting confirmation. Save only the name; preserve the booking step
+  // and its selected package, date, time, and payment state.
+  const acceptedName = stated.name;
+  const nameOnlyReply = Boolean(
+    acceptedName &&
+    !stated.service &&
+    !stated.date &&
+    !stated.time &&
+    !invalidDate
+  );
+
+  if (
+    draft &&
+    nameOnlyReply &&
+    acceptedName &&
+    isUsableName(acceptedName) &&
+    draft.step === 'awaiting_confirmation' &&
+    !draft.isForSomeoneElse &&
+    draft.service &&
+    draft.date &&
+    draft.time
+  ) {
+    let saved = await prisma.bookingDraft.updateMany({
+      where: {
+        id: draft.id,
+        step: draft.step,
+        version: draft.version,
+      },
+      data: {
+        name: acceptedName,
+        version: draft.version + 1,
+      },
+    });
+
+    // Retry once if another write changed the draft version.
+    if (!saved.count) {
+      const latest = await prisma.bookingDraft.findUnique({
+        where: { customerId },
+      });
+
+      if (
+        !latest ||
+        latest.step !== 'awaiting_confirmation' ||
+        latest.isForSomeoneElse ||
+        !latest.service ||
+        !latest.date ||
+        !latest.time
+      ) {
+        return bail;
+      }
+
+      saved = await prisma.bookingDraft.updateMany({
+        where: {
+          id: latest.id,
+          step: latest.step,
+          version: latest.version,
+        },
+        data: {
+          name: acceptedName,
+          version: latest.version + 1,
+        },
+      });
+
+      if (!saved.count) {
+        return bail;
+      }
+    }
+
+    // Keep the customer profile consistent without replacing a longer
+    // existing name with just its first name.
+    const customer = await prisma.customer.findUnique({
+      where: { id: customerId },
+    });
+
+    if (customer) {
+      const profileName = isUsableName(customer.name)
+        ? sanitizeSlotValue(customer.name)
+        : null;
+
+      const shortensProfileName = Boolean(
+        profileName &&
+        profileName
+          .toLowerCase()
+          .startsWith(`${acceptedName.toLowerCase()} `)
+      );
+
+      if (!shortensProfileName) {
+        await prisma.customer.update({
+          where: { id: customerId },
+          data: { name: acceptedName },
+        });
+      }
+    }
+
+    // Let the agent continue using the updated draft on this same turn.
+    return null;
+  }
+
   if (
     draft &&
     (PROTECTED_STEPS.includes(draft.step) || draft.isForSomeoneElse)
