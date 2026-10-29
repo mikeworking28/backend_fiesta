@@ -1,6 +1,7 @@
 import prisma from '../../config/prisma';
 import { inBusinessTimezone } from '../../utils/time';
 
+
 export class BookingDraftService {
  async saveBookingProposal(input: {
   customerId: string;
@@ -74,6 +75,20 @@ export class BookingDraftService {
       });
     } catch (error: any) {
       if (error?.code === 'P2025') throw Object.assign(new Error('A payment prompt is already being sent for this booking.'), { code: 'PAYMENT_ALREADY_PENDING' });
+      throw error;
+    }
+  }
+  
+  /** Till flow: she has been told how to pay; wait for her M-Pesa message. */
+  async markAwaitingPaymentMessage(customerId: string, version?: number) {
+    const versioned = Number.isInteger(version);
+    try {
+      return await prisma.bookingDraft.update({
+        where: { customerId, step: 'awaiting_confirmation', ...(versioned ? { version } : {}) },
+        data: { step: 'awaiting_payment_message', ...(versioned ? { version: Number(version) + 1 } : {}) },
+      });
+    } catch (error: any) {
+      if (error?.code === 'P2025') throw Object.assign(new Error('This booking is already waiting for a payment message.'), { code: 'PAYMENT_ALREADY_PENDING' });
       throw error;
     }
   }

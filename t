@@ -1,9 +1,0 @@
-warning: in the working copy of 'src/services/agent/agent.routes.characterization.test.ts', CRLF will be replaced by LF the next time Git touches it
-warning: in the working copy of 'src/services/agent/agent.service.test.ts', CRLF will be replaced by LF the next time Git touches it
-warning: in the working copy of 'src/services/agent/agent.service.ts', CRLF will be replaced by LF the next time Git touches it
-warning: in the working copy of 'src/services/agent/booking-process-reply.ts', CRLF will be replaced by LF the next time Git touches it
-warning: in the working copy of 'src/services/agent/booking-tools.ts', CRLF will be replaced by LF the next time Git touches it
-warning: in the working copy of 'src/services/agent/constants.ts', CRLF will be replaced by LF the next time Git touches it
-warning: in the working copy of 'src/services/agent/package-replies.ts', CRLF will be replaced by LF the next time Git touches it
-warning: in the working copy of 'src/services/agent/payment-recovery.test.ts', CRLF will be replaced by LF the next time Git touches it
-warning: in the working copy of 'src/services/agent/payment-recovery.ts', CRLF will be replaced by LF the next time Git touches it
