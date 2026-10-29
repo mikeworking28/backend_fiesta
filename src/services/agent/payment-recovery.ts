@@ -16,7 +16,7 @@ const RESEND_COOLDOWN_MS = 30_000;
 export const STUDIO_CONTACT = '0720 111928';
 
 export type PaymentSituationKind = 'none' | 'prompt_sent' | 'prompt_stale' | 'cancelled' | 'failed' | 'hold_expired' | 'unrecorded' | 'paid';
-export type PaymentMessageKind = 'not_arrived' | 'paid_claim' | 'receipt' | 'status_check' | 'restart' | 'resend' | 'consent';
+export type PaymentMessageKind = 'payment_details' | 'not_arrived' | 'paid_claim' | 'receipt' | 'status_check' | 'restart' | 'resend' | 'consent';
 
 type DraftLike = { id: string; step: string; version?: number | null; updatedAt?: Date | string | null; service?: string | null; date?: string | null; time?: string | null };
 type PaymentLike = { id: string; amount: number; phone: string; status: string; checkoutRequestId?: string | null; updatedAt?: Date | string | null };
@@ -151,6 +151,8 @@ export function classifyPaymentMessage(message: string): PaymentMessageKind | nu
   if (/\b(?:start (?:again|over|afresh)|begin again|from scratch)\b/.test(text)) return 'restart';
 
   if (/\b(?:no|not|don'?t|do not|wait|hold on|later)\b/.test(text)) return null;
+  if (/\b(?:payment details?|payment options?|till number|paybill number)\b/.test(text)
+    || /\b(?:what\s+(?:is|are)\s+(?:the\s+)?(?:payment\s+details?|till\s+number|paybill\s+number|m-?pesa\s+number)|where\s+(?:do|should|can)\s+i\s+pay|how\s+(?:do|can)\s+i\s+pay|which\s+(?:till|paybill|number)\s+(?:should|do)\s+i\s+use)\b/.test(text)) return 'payment_details';
   if (/\bre-?send\b|\bre-?try\b|\btry (?:it |that |this )?again\b|\b(?:send|do|push) (?:it |that |this |the prompt |the payment |the request )?again\b|\b(?:one more|last|another) time\b|\bnew (?:prompt|one|request)\b/.test(text)) return 'resend';
   if (/^(?:yes+|yeah|yep|yea|ndio|confirm(?:ed)?|go[\s-]?ahead|proceed|please do|sure)\b/.test(text)
     || /\b(?:finish|complete|make|do) (?:the |my |this )?payment\b|\bsend (?:it|the prompt)\b|\bpay (?:now|it|the deposit)\b|^(?:let'?s|let us) do it(?: then)?$/.test(text)) return 'consent';
@@ -291,11 +293,14 @@ async function handlePaidClaim(this: any, customerId: string, message: string, s
 export async function handlePaymentRecovery(this: any, customerId: string, message: string, forcedKind?: PaymentMessageKind): Promise<string | null> {
   const kind = forcedKind || classifyPaymentMessage(message);
   if (!kind) return null;
-  const aboutPayment = kind === 'status_check' || kind === 'paid_claim' || /\b(?:pa(?:y|id|yment)\w*|m-?pesa|prompt|stk|deposit)\b/i.test(message);
+  const aboutPayment = kind === 'status_check' || kind === 'paid_claim' || kind === 'payment_details' || /\b(?:pa(?:y|id|yment)\w*|m-?pesa|prompt|stk|deposit)\b/i.test(message);
   const s = await getPaymentSituation(customerId, Date.now(), aboutPayment);
 
   if (s.draft?.step !== 'payment_pending') {
     if (s.kind === 'paid') return paidReply(s);
+    if (kind === 'payment_details') {
+      return 'The official payment method for Fiesta House Maternity is Lipa na M-Pesa Buy Goods Till Number 670241. Please use only the deposit amount confirmed for your selected edition; if you have not received the exact amount, confirm it with the studio team before paying. Your booking is confirmed only after the deposit is received and verified.';
+    }
     return kind === 'paid_claim' && !s.draft ? handlePaidClaim.call(this, customerId, message, s) : null;
   }
   if (s.kind === 'paid') return paidReply(s);
@@ -304,6 +309,15 @@ export async function handlePaymentRecovery(this: any, customerId: string, messa
     case 'paid_claim':
     case 'receipt':
       return handlePaidClaim.call(this, customerId, message, s);
+    case 'payment_details': {
+      if (s.kind === 'hold_expired') return situationReply(s, customerId);
+
+      const amount = s.payment && Number.isFinite(s.payment.amount)
+        ? `Ksh ${s.payment.amount.toLocaleString()}`
+        : 'the deposit amount confirmed in your booking proposal';
+
+      return `To complete your booking, please pay ${amount} via Lipa na M-Pesa: Buy Goods Till Number 670241 (Fiesta House Maternity). Once paid, please paste or forward the M-Pesa confirmation message here and a team member will confirm your booking.`;
+    }
     case 'status_check':
       return situationReply(s, customerId);
     case 'not_arrived':

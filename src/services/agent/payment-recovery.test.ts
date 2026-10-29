@@ -106,7 +106,7 @@ function harness(context: any, overrides: { draft?: Record<string, unknown>; pay
   });
   stub(whatsappService, 'sendMessage', async (_to: string, message: string) => { state.sent.push(message); return {}; });
   stub(whatsappService, 'sendDocument', async (_to: string, _pdf: unknown, _name: string, message: string) => { state.sent.push(message); return {}; });
-  stub(require('../notifications/notification.service'), 'notifyAdmin', async () => {});
+  stub(prisma.notification, 'create', async () => ({ id: 'notification-test' }));
   stub(prisma.booking, 'create', async ({ data }: any) => {
     state.bookingsCreated++;
     const booking = { id: `booking-${state.bookingsCreated}`, ...data, customer: { id: CUSTOMER, name: 'Joan' } };
@@ -160,6 +160,9 @@ test('classifies the payment phrases from the Joan run', () => {
     ['yes', 'consent'],
     ['start again', 'restart'],
     ['SFK7ABC123', 'receipt'],
+    ['what is the payment details', 'payment_details'],
+    ['what are the payment details?', 'payment_details'],
+    ['where do I pay?', 'payment_details'],
   ] as const) {
     assert.equal(classifyPaymentMessage(message), kind, message);
   }
@@ -168,6 +171,22 @@ test('classifies the payment phrases from the Joan run', () => {
   }
 });
 
+test('payment-detail questions use the official Till without resending or invoking the model', async (context) => {
+  const { state, say } = harness(context, {
+    draft: {
+      date: '2026-10-31',
+      dateTimeIso: '2026-10-31T12:00:00.000Z',
+    },
+  });
+
+  const reply = await say('what is the payment details');
+
+  assert.match(reply, /Buy Goods Till Number 670241/);
+  assert.match(reply, /Ksh 2,000/);
+  assert.doesNotMatch(reply, /0700-XXXXXX/);
+  assert.equal(state.stkPushes, 0);
+  assert.equal(state.bookingsCreated, 0);
+});
 test('Daraja result codes map to customer sentences without raw Daraja text', () => {
   assert.equal(describeDarajaResult(1032).status, 'cancelled');
   for (const code of [1, 2001, 1037, 1001, 9999]) assert.equal(describeDarajaResult(code).status, 'failed');
