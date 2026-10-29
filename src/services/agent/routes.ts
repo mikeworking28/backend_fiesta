@@ -306,6 +306,7 @@ export function createMessageRoutes(
     },
     {
       name: 'postActionAcknowledgement',
+      replyMode: 'natural',
       when: () => this.isPostActionAcknowledgement(userMessage, history),
       handle: () => {
         const lastAssistant = [...history].reverse().find(m => m.role === 'assistant')?.content || '';
@@ -319,7 +320,7 @@ export function createMessageRoutes(
     },
     {
       name: 'deferral',
-      replyMode: 'deterministic',
+      replyMode: 'natural',
       when: () => isDeferral(userMessage) && !Object.keys(extractStatedSlots(userMessage, history)).length,
       handle: () => DEFERRAL_REPLY,
     },
@@ -466,13 +467,13 @@ export function createMessageRoutes(
     },
     {
       name: 'greeting',
-      replyMode: 'deterministic',
+      replyMode: 'natural',
       when: () => isPlainGreeting(userMessage),
       handle: async () => this.getGreetingReply(customerId, history),
     },
     {
       name: 'businessIntroduction',
-      replyMode: 'deterministic',
+      replyMode: 'natural',
       when: () => getInformationalFlow() === 'business_introduction',
       handle: () => this.getBusinessIntroductionReply(userMessage),
     },
@@ -534,7 +535,7 @@ export function createMessageRoutes(
     
 {
   name: 'addonAdvice',
-  replyMode: 'deterministic',
+  replyMode: 'natural',
   when: () => isAddonAdviceRequest(userMessage, history),
   handle: () => buildAddonAdviceReply(),
 },
@@ -549,13 +550,13 @@ export function createMessageRoutes(
 
     {
       name: 'addonRequest',
-      replyMode: 'deterministic',
+      replyMode: 'natural',
       when: () => isAddonListRequest(userMessage),
       handle: () => this.getCatalogDisplayReply(customerId, platform, 'addons', userMessage, history),
     },
     {
       name: 'addonListFollowUp',
-      replyMode: 'deterministic',
+      replyMode: 'natural',
       when: () => this.isAddonListFollowUp(userMessage, history) && !this.getSelectedAddon(userMessage, history) && !addonSelectionClarification(userMessage, history),
       handle: () => this.getCatalogDisplayReply(customerId, platform, 'addons', userMessage, history),
     },
@@ -638,7 +639,7 @@ export function createMessageRoutes(
     },
     {
       name: 'additions',
-      replyMode: 'deterministic',
+      replyMode: 'natural',
       when: () => this.shouldUseAdditionsReply(userMessage) && !this.isDecliningOptionalAddons(userMessage, history),
       handle: () => this.getCatalogDisplayReply(customerId, platform, 'addons', userMessage, history),
     },
@@ -725,7 +726,7 @@ export function createMessageRoutes(
 },
 {
   name: 'aboutBusiness',
-  replyMode: 'deterministic',
+  replyMode: 'natural',
   when: () =>
     /\b(?:about your services|what services do you offer|what does fiesta house do|tell me about fiesta house)\b/i
       .test(userMessage),
