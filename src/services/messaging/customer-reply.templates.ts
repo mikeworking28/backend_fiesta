@@ -22,7 +22,7 @@ export function formatCustomerReply(reply: string, emojiContext?: EmojiContext):
 
 export const customerReplyTemplates = {
   bookingAwaitingConfirmation: () =>
-    'I have the details ready. When you are happy with the date and time, reply yes and I will send the M-Pesa deposit prompt.',
+    'I have the details ready. When you are happy with the date, time and deposit, reply yes and I will share the Till payment instructions.',
 
   rescheduleAwaitingConfirmation: () =>
     'I have the new time ready. Reply yes when you would like me to confirm the change.',

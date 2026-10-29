@@ -1,7 +1,7 @@
 
 import OpenAI from 'openai';
 import { CHAT_MODEL, createChatCompletion, type ChatProvider } from './llm/provider';
-export { createChatCompletion, getGroqCooldownUntil } from './llm/provider';
+export { createChatCompletion, getGroqCooldownUntil,getGroqRateLimitSnapshots } from './llm/provider';
 import {
   createCompletionWithToolNameGuard as guardToolCompletion,
   isToolCallWithoutToolsError as isNoToolsCallError,

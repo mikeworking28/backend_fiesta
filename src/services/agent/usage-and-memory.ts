@@ -88,25 +88,73 @@ export async function checkTokenBudget(customerId: string): Promise<boolean> {
   return currentUsage < DAILY_TOKEN_CAP;
 }
 
-export async function recordTokenUsage(customerId: string, tokensUsed: number): Promise<void> {
+export async function recordTokenUsage(
+  customerId: string,
+  tokensUsed: number,
+): Promise<void> {
   if (tokensUsed <= 0) return;
-  try {
-    const customer = await prisma.customer.findUnique({
-      where: { id: customerId },
-      select: { dailyTokenUsage: true, tokenResetDate: true }
-    });
-    if (!customer) return;
 
-    const isNewDay = !customer.tokenResetDate || customer.tokenResetDate.toDateString() !== new Date().toDateString();
-    await prisma.customer.update({
-      where: { id: customerId },
-      data: {
-        dailyTokenUsage: isNewDay ? tokensUsed : { increment: tokensUsed },
-        tokenResetDate: new Date(),
-        totalTokensUsed: { increment: tokensUsed }
-      }
+  try {
+    const now = new Date();
+
+    // Historical reporting uses UTC calendar days.
+    const usageDate = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate(),
+      ),
+    );
+
+    await prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.findUnique({
+        where: { id: customerId },
+        select: {
+          dailyTokenUsage: true,
+          tokenResetDate: true,
+        },
+      });
+
+      if (!customer) return;
+
+      // Preserve the existing customer rate-limit counter behaviour.
+      const isNewDay =
+        !customer.tokenResetDate ||
+        customer.tokenResetDate.toDateString() !== now.toDateString();
+
+      await tx.customer.update({
+        where: { id: customerId },
+        data: {
+          dailyTokenUsage: isNewDay
+            ? tokensUsed
+            : { increment: tokensUsed },
+          tokenResetDate: now,
+          totalTokensUsed: { increment: tokensUsed },
+        },
+      });
+
+      // Persist the historical daily total separately.
+      await tx.customerDailyTokenUsage.upsert({
+        where: {
+          customerId_date: {
+            customerId,
+            date: usageDate,
+          },
+        },
+        create: {
+          customerId,
+          date: usageDate,
+          totalTokens: tokensUsed,
+        },
+        update: {
+          totalTokens: { increment: tokensUsed },
+        },
+      });
     });
   } catch (err) {
-    console.error('Failed to record token usage:', err);
+    console.error(
+      'Failed to record token usage:',
+      err,
+    );
   }
 }

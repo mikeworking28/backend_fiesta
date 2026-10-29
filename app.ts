@@ -572,6 +572,7 @@ app.get('/api/statistics/comprehensive', analyticsController.getBusinessKpis.bin
 app.get('/api/statistics/ai-performance', analyticsController.getAiPerformance.bind(analyticsController));
 app.get('/api/statistics/observability', analyticsController.getObservability.bind(analyticsController));
 app.get('/api/statistics/model-usage', analyticsController.getModelUsage.bind(analyticsController));
+app.get('/api/statistics/customer-daily-token-usage', analyticsController.getCustomerDailyTokenUsage.bind(analyticsController));
 app.get('/api/statistics/personalized-responses', analyticsController.getPersonalizedResponses.bind(analyticsController));
 app.get('/api/statistics/system', (req, res) => res.json({ customers: { total: 0, active: 0 }, messages: { total: 0, responseRate: 100 }, bookings: { total: 0, completionRate: 100 } }));
 

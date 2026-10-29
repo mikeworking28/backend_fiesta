@@ -1,0 +1,773 @@
+import { Request, Response } from 'express';
+import prisma from '../config/prisma';
+import dayjs from 'dayjs';
+import { getGroqCooldownUntil, getGroqRateLimitSnapshots } from '../services/agent/agent.service';
+
+export class AnalyticsController {
+
+  async getModelUsage(req: Request, res: Response) {
+    try {
+      const daysRaw = Number(req.query.days || 7);
+      const days = Number.isInteger(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, 30) : 7;
+      const since = new Date();
+      since.setUTCHours(0, 0, 0, 0);
+      since.setUTCDate(since.getUTCDate() - days + 1);
+
+      const [rows, customerTotals, customers] = await Promise.all([
+        prisma.aiModelUsage.findMany({
+          where: { createdAt: { gte: since } },
+          select: { createdAt: true, provider: true, model: true, inputTokens: true, outputTokens: true, totalTokens: true, status: true, failover: true, errorCode: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.customer.aggregate({ _sum: { totalTokensUsed: true } }),
+        prisma.customer.findMany({
+          where: { totalTokensUsed: { gt: 0 } },
+          select: { id: true, name: true, totalTokensUsed: true, dailyTokenUsage: true, tokenResetDate: true },
+          orderBy: { totalTokensUsed: 'desc' },
+          take: 20,
+        }),
+      ]);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const customerUsage = customers.map((customer) => ({
+        id: customer.id,
+        name: customer.name,
+        totalTokens: customer.totalTokensUsed,
+        todayTokens: customer.tokenResetDate && customer.tokenResetDate >= today ? customer.dailyTokenUsage : 0,
+      }));
+      const summary = {
+        groq: { inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, failures: 0 },
+        groq2: { inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, failures: 0 },
+        gemini: { inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, failures: 0 },
+        gemini2: { inputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0, failures: 0 },
+      };
+      const daily = Array.from({ length: days }, (_, index) => {
+        const date = new Date(since);
+        date.setUTCDate(date.getUTCDate() + index);
+        return { date: date.toISOString().slice(0, 10), groq: 0, groq2: 0, gemini: 0, gemini2: 0 };
+      });
+      const byDate = new Map(daily.map((day) => [day.date, day]));
+
+      for (const row of rows) {
+        if (row.provider !== 'groq' && row.provider !== 'groq2' && row.provider !== 'gemini' && row.provider !== 'gemini2') continue;
+        const totals = summary[row.provider];
+        totals.calls++;
+        if (row.status !== 'success') totals.failures++;
+        totals.inputTokens += row.inputTokens;
+        totals.outputTokens += row.outputTokens;
+        totals.totalTokens += row.totalTokens;
+        const day = byDate.get(row.createdAt.toISOString().slice(0, 10));
+        if (day) day[row.provider] += row.totalTokens;
+      }
+
+      const todayStart = new Date();
+todayStart.setUTCHours(0, 0, 0, 0);
+
+const todayModelMap = new Map<
+  string,
+  {
+    model: string;
+    provider: string;
+    calls: number;
+    failures: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  }
+>();
+
+for (const row of rows) {
+  if (row.createdAt < todayStart) continue;
+
+  const model = row.model || 'Unknown model';
+  const key = `${row.provider}:${model}`;
+
+  const current = todayModelMap.get(key) || {
+    model,
+    provider: row.provider,
+    calls: 0,
+    failures: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+  };
+
+  current.calls += 1;
+
+  if (row.status !== 'success') {
+    current.failures += 1;
+  }
+
+  current.inputTokens += row.inputTokens;
+  current.outputTokens += row.outputTokens;
+  current.totalTokens += row.totalTokens;
+
+  todayModelMap.set(key, current);
+}
+
+const todayByModel = Array.from(todayModelMap.values()).sort(
+  (a, b) => b.totalTokens - a.totalTokens,
+);
+
+      return res.json({
+  days,
+  allTimeTokens: customerTotals._sum.totalTokensUsed || 0,
+  customerUsage,
+  summary,
+  daily,
+  todayByModel,
+  recent: rows.slice(0, 12),
+  groqCooldownUntil: getGroqCooldownUntil(),
+});
+    } catch (error: any) {
+      return res.status(500).json({ error: 'Unable to load model usage' });
+    }
+  }
+
+  /**
+   * Get AI performance metrics from persisted observability data
+   */
+  async getAiPerformance(req: Request, res: Response) {
+    try {
+      const daysRaw = Number(req.query.days || 30);
+      const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, 180) : 30;
+      const since = dayjs().subtract(days, 'day').toDate();
+
+      const [jobMetrics, customerMemory, learningRows] = await Promise.all([
+        prisma.aiJobMetric.findMany({
+          where: { createdAt: { gte: since } },
+          select: {
+            latencyMs: true,
+            success: true,
+            isFallback: true,
+          },
+        }),
+        prisma.customerMemory.aggregate({
+          _avg: { satisfactionScore: true },
+        }),
+        prisma.conversationLearning.findMany({
+          where: { createdAt: { gte: since } },
+          select: {
+            extractedIntent: true,
+            wasSuccessful: true,
+          },
+        }),
+      ]);
+
+      const latencies = jobMetrics
+        .map((m) => m.latencyMs)
+        .filter((latency): latency is number => typeof latency === 'number' && Number.isFinite(latency));
+
+      const avgLatency = latencies.length > 0
+        ? Math.round(latencies.reduce((sum, current) => sum + current, 0) / latencies.length)
+        : 0;
+
+      const sortedLatencies = [...latencies].sort((a, b) => a - b);
+      const p95 = sortedLatencies.length > 0
+        ? sortedLatencies[Math.min(sortedLatencies.length - 1, Math.floor(sortedLatencies.length * 0.95))]
+        : 0;
+
+      const totalJobs = jobMetrics.length;
+      const successfulJobs = jobMetrics.filter((m) => m.success).length;
+      const fallbackJobs = jobMetrics.filter((m) => m.isFallback).length;
+
+      const successRate = totalJobs > 0 ? (successfulJobs / totalJobs) * 100 : 0;
+      const nonFallbackSuccessRate = totalJobs > 0
+        ? ((jobMetrics.filter((m) => m.success && !m.isFallback).length) / totalJobs) * 100
+        : 0;
+
+      const intentAccumulator = new Map<string, { count: number; successful: number }>();
+      for (const row of learningRows) {
+        const key = row.extractedIntent || 'unknown';
+        const current = intentAccumulator.get(key) || { count: 0, successful: 0 };
+        current.count += 1;
+        if (row.wasSuccessful) {
+          current.successful += 1;
+        }
+        intentAccumulator.set(key, current);
+      }
+
+      const byIntent = Array.from(intentAccumulator.entries()).map(([intent, data]) => {
+        const count = data.count;
+        const successful = data.successful;
+        return {
+          intent,
+          count,
+          successRate: count > 0 ? Math.round((successful / count) * 10000) / 100 : 0,
+        };
+      });
+
+      return res.json({
+        responseTime: {
+          average: avgLatency,
+          p95: Math.round(p95),
+        },
+        accuracy: {
+          successRate: Math.round(successRate * 100) / 100,
+          sampleSize: totalJobs,
+        },
+        userSatisfaction: {
+          averageRating: customerMemory._avg.satisfactionScore ? Math.round(customerMemory._avg.satisfactionScore * 100) / 100 : 0,
+        },
+        efficiency: {
+          cacheHitRate: Math.round(nonFallbackSuccessRate * 100) / 100,
+          fallbackRate: totalJobs > 0 ? Math.round((fallbackJobs / totalJobs) * 10000) / 100 : 0,
+        },
+        byIntent,
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * AI observability rollup: latency percentiles, strategy mix, fallback and
+   * circuit-breaker usage, escalations by type, and a daily series.
+   * Backs the single "AI Observability" view proposed in
+   * docs/GAPS_AND_STRATEGIC_OPPORTUNITIES.md Â§1 (Tier 1 + strategy hit rates).
+   */
+  async getObservability(req: Request, res: Response) {
+    try {
+      const daysRaw = Number(req.query.days || 7);
+      const days = Number.isInteger(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, 90) : 7;
+      // Inclusive window: (days - 1) days ago at midnight through today.
+      const since = dayjs().subtract(days - 1, 'day').startOf('day').toDate();
+
+      const [jobMetrics, escalationRows] = await Promise.all([
+        prisma.aiJobMetric.findMany({
+          where: { createdAt: { gte: since } },
+          select: {
+            createdAt: true, latencyMs: true, success: true, isFallback: true,
+            strategyUsed: true, circuitBreakerTrip: true, platform: true,
+          },
+        }),
+        prisma.escalation.findMany({
+          where: { createdAt: { gte: since } },
+          select: { escalationType: true, status: true },
+        }),
+      ]);
+
+      const latencies = jobMetrics
+        .map((row) => row.latencyMs)
+        .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+        .sort((a, b) => a - b);
+      const percentile = (fraction: number): number =>
+        latencies.length > 0 ? latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * fraction))] : 0;
+      const average = latencies.length > 0
+        ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length)
+        : 0;
+
+      const totalJobs = jobMetrics.length;
+      const failures = jobMetrics.filter((row) => !row.success).length;
+      const fallbacks = jobMetrics.filter((row) => row.isFallback).length;
+      const breakerTrips = jobMetrics.filter((row) => row.circuitBreakerTrip).length;
+      const percentage = (value: number): number =>
+        totalJobs > 0 ? Math.round((value / totalJobs) * 10000) / 100 : 0;
+
+      const strategyAccumulator = new Map<string, { count: number; failures: number; fallbacks: number }>();
+      const platformAccumulator = new Map<string, { count: number; fallbacks: number; latencyTotal: number; latencySamples: number }>();
+      const dailyAccumulator = new Map<string, { jobs: number; failures: number; fallbacks: number }>();
+      for (let index = 0; index < days; index++) {
+        dailyAccumulator.set(dayjs(since).add(index, 'day').format('YYYY-MM-DD'), { jobs: 0, failures: 0, fallbacks: 0 });
+      }
+
+      for (const row of jobMetrics) {
+        const strategy = row.strategyUsed || 'untracked';
+        const strategyRow = strategyAccumulator.get(strategy) || { count: 0, failures: 0, fallbacks: 0 };
+        strategyRow.count++;
+        if (!row.success) strategyRow.failures++;
+        if (row.isFallback) strategyRow.fallbacks++;
+        strategyAccumulator.set(strategy, strategyRow);
+
+        const platform = row.platform || 'unknown';
+        const platformRow = platformAccumulator.get(platform) || { count: 0, fallbacks: 0, latencyTotal: 0, latencySamples: 0 };
+        platformRow.count++;
+        if (row.isFallback) platformRow.fallbacks++;
+        if (typeof row.latencyMs === 'number' && Number.isFinite(row.latencyMs)) {
+          platformRow.latencyTotal += row.latencyMs;
+          platformRow.latencySamples++;
+        }
+        platformAccumulator.set(platform, platformRow);
+
+        const day = dailyAccumulator.get(dayjs(row.createdAt).format('YYYY-MM-DD'));
+        if (day) {
+          day.jobs++;
+          if (!row.success) day.failures++;
+          if (row.isFallback) day.fallbacks++;
+        }
+      }
+
+      const strategyMix = Array.from(strategyAccumulator.entries())
+        .map(([strategy, data]) => ({
+          strategy,
+          count: data.count,
+          sharePct: percentage(data.count),
+          failures: data.failures,
+          fallbacks: data.fallbacks,
+        }))
+        .sort((a, b) => b.count - a.count);
+
+      const byPlatform = Array.from(platformAccumulator.entries())
+        .map(([platform, data]) => ({
+          platform,
+          jobs: data.count,
+          fallbacks: data.fallbacks,
+          fallbackPct: data.count > 0 ? Math.round((data.fallbacks / data.count) * 10000) / 100 : 0,
+          avgLatencyMs: data.latencySamples > 0 ? Math.round(data.latencyTotal / data.latencySamples) : 0,
+        }))
+        .sort((a, b) => b.jobs - a.jobs);
+
+      const escalationAccumulator = new Map<string, number>();
+      for (const row of escalationRows) {
+        const type = row.escalationType || 'unknown';
+        escalationAccumulator.set(type, (escalationAccumulator.get(type) || 0) + 1);
+      }
+
+      return res.json({
+        window: { days, since: since.toISOString() },
+        jobs: {
+          total: totalJobs,
+          failures,
+          fallbacks,
+          breakerTrips,
+          successRatePct: percentage(totalJobs - failures),
+          fallbackRatePct: percentage(fallbacks),
+        },
+        latency: {
+          avgMs: average,
+          p50Ms: percentile(0.5),
+          p95Ms: percentile(0.95),
+          maxMs: latencies.length > 0 ? latencies[latencies.length - 1] : 0,
+          sampleSize: latencies.length,
+        },
+        strategyMix,
+        byPlatform,
+        escalations: {
+          total: escalationRows.length,
+          open: escalationRows.filter((row) => row.status === 'OPEN').length,
+          byType: Array.from(escalationAccumulator.entries())
+            .map(([type, count]) => ({ type, count }))
+            .sort((a, b) => b.count - a.count),
+        },
+        daily: Array.from(dailyAccumulator.entries()).map(([date, data]) => ({ date, ...data })),
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: 'Unable to load observability metrics' });
+    }
+  }
+
+  /**
+   * Get personalization effectiveness metrics from learning data
+   */
+  async getPersonalizedResponses(req: Request, res: Response) {
+    try {
+      const daysRaw = Number(req.query.days || 30);
+      const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, 180) : 30;
+      const since = dayjs().subtract(days, 'day').toDate();
+
+      const [learningAggregate, learningCount, successfulConversations, styleBreakdown] = await Promise.all([
+        prisma.conversationLearning.aggregate({
+          where: { createdAt: { gte: since } },
+          _avg: { timeToResolution: true },
+        }),
+        prisma.conversationLearning.count({
+          where: { createdAt: { gte: since } },
+        }),
+        prisma.conversationLearning.count({
+          where: {
+            createdAt: { gte: since },
+            wasSuccessful: true,
+          },
+        }),
+        prisma.customerMemory.groupBy({
+          by: ['communicationStyle'],
+          _count: { id: true },
+          where: {
+            communicationStyle: { not: null },
+          },
+        }),
+      ]);
+
+      const byCommunicationStyle = styleBreakdown.map((row) => ({
+        style: row.communicationStyle || 'unknown',
+        customers: row._count.id,
+      }));
+
+      return res.json({
+        totalPersonalizedConversations: learningCount,
+        overallSuccessRate: learningCount > 0 ? Math.round((successfulConversations / learningCount) * 10000) / 100 : 0,
+        averageTimeToResolution: learningAggregate._avg.timeToResolution ? Math.round(learningAggregate._avg.timeToResolution) : 0,
+        byCommunicationStyle,
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+  
+  /**
+   * Get booking counts by status
+   */
+  async getBookingStatusCounts(req: Request, res: Response) {
+    try {
+      const counts = await prisma.booking.groupBy({
+        by: ['status'],
+        _count: {
+          id: true
+        }
+      });
+
+      const formatted = {
+        confirmed: 0,
+        provisional: 0,
+        cancelled: 0
+      };
+
+      counts.forEach(c => {
+        if (c.status === 'confirmed') formatted.confirmed = c._count.id;
+        if (c.status === 'provisional') formatted.provisional = c._count.id;
+        if (c.status === 'cancelled') formatted.cancelled = c._count.id;
+      });
+
+      return res.json(formatted);
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Get total revenue
+   */
+  async getRevenue(req: Request, res: Response) {
+    try {
+      const confirmedBookings = await prisma.booking.findMany({
+        where: { status: 'confirmed' }
+      });
+
+      const packagePrices: Record<string, number> = {
+        'standard': 10000, 'economy': 15000, 'executive': 20000, 
+        'gold': 30000, 'platinum': 35000, 'vip': 45000, 'vvip': 50000
+      };
+
+      const totalRevenue = confirmedBookings.reduce((sum, b) => {
+        const serviceKey = Object.keys(packagePrices).find(k => b.service.toLowerCase().includes(k)) || 'standard';
+        return sum + (packagePrices[serviceKey] || 0);
+      }, 0);
+
+      return res.json({ total: totalRevenue });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Get Business KPIs
+   */
+  /**
+   * Get Business KPIs matched to frontend BusinessKPIs interface
+   */
+  async getBusinessKpis(req: Request, res: Response) {
+    try {
+      const totalCustomers = await prisma.customer.count();
+      const bookings = await prisma.booking.findMany({ where: { status: 'confirmed' } });
+      const totalBookings = bookings.length;
+      
+      const packagePrices: Record<string, number> = {
+        'standard': 10000, 'economy': 15000, 'executive': 20000, 
+        'gold': 30000, 'platinum': 35000, 'vip': 45000, 'vvip': 50000
+      };
+
+      const totalRevenue = bookings.reduce((sum, b) => {
+        const serviceKey = Object.keys(packagePrices).find(k => b.service.toLowerCase().includes(k)) || 'standard';
+        return sum + (packagePrices[serviceKey] || 0);
+      }, 0);
+
+      // Popular Packages
+      const packageCounts: Record<string, number> = {};
+      bookings.forEach(b => {
+        const serviceKey = Object.keys(packagePrices).find(k => b.service.toLowerCase().includes(k)) || 'standard';
+        packageCounts[serviceKey] = (packageCounts[serviceKey] || 0) + 1;
+      });
+      const popularPackages = Object.entries(packageCounts)
+        .map(([pkg, count]) => ({ package: pkg, bookings: count }))
+        .sort((a, b) => b.bookings - a.bookings);
+
+      // Customer metrics
+      const customersWithBookings = await prisma.customer.count({
+        where: { bookings: { some: {} } }
+      });
+
+      const startOfMonth = dayjs().startOf('month').toDate();
+      const newCustomersThisMonth = await prisma.customer.count({
+        where: { createdAt: { gte: startOfMonth } }
+      });
+
+      return res.json({
+        revenue: {
+          total: totalRevenue,
+          count: totalBookings
+        },
+        avgBookingValue: totalBookings > 0 ? totalRevenue / totalBookings : 0,
+        conversionRate: {
+          rate: totalCustomers > 0 ? (customersWithBookings / totalCustomers) * 100 : 0,
+          totalCustomers,
+          convertedCustomers: customersWithBookings
+        },
+        popularPackages: popularPackages.slice(0, 5),
+        customerMetrics: {
+          totalCustomers,
+          customersWithBookings,
+          repeatCustomers: 0, // Simplified
+          repeatRate: 0,
+          newCustomersThisMonth,
+          clv: totalCustomers > 0 ? totalRevenue / totalCustomers : 0
+        },
+        period: {
+          start: dayjs().subtract(1, 'month').toDate(),
+          end: new Date()
+        }
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Get Active Users Stats
+   */
+  async getActiveUsers(req: Request, res: Response) {
+    try {
+      return res.json({
+        daily: await prisma.customer.count({ where: { updatedAt: { gte: dayjs().subtract(1, 'day').toDate() } } }),
+        weekly: await prisma.customer.count({ where: { updatedAt: { gte: dayjs().subtract(7, 'day').toDate() } } }),
+        monthly: await prisma.customer.count({ where: { updatedAt: { gte: dayjs().subtract(30, 'day').toDate() } } })
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Get Engaged Customers
+   */
+  async getEngagedCustomers(req: Request, res: Response) {
+    try {
+      const customers = await prisma.customer.findMany({
+        take: 10,
+        include: { _count: { select: { messages: true, bookings: true } } },
+        orderBy: { messages: { _count: 'desc' } }
+      });
+      return res.json(customers);
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Get Package Popularity
+   */
+  async getPackagePopularity(req: Request, res: Response) {
+    try {
+      const bookings = await prisma.booking.groupBy({
+        by: ['service'],
+        _count: { id: true },
+        orderBy: { _count: { id: 'desc' } }
+      });
+
+      const formatted = bookings.map(b => ({
+        name: b.service,
+        value: b._count.id
+      }));
+
+      return res.json(formatted);
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Get monthly revenue (MonthlyRevenue interface)
+   */
+  async getMonthlyRevenue(req: Request, res: Response) {
+    try {
+      const year = dayjs().year();
+      const bookings = await prisma.booking.findMany({
+        where: {
+          status: 'confirmed',
+          dateTime: {
+            gte: dayjs(`${year}-01-01`).toDate(),
+            lte: dayjs(`${year}-12-31`).toDate()
+          }
+        }
+      });
+
+      const packagePrices: Record<string, number> = {
+        'standard': 10000, 'economy': 15000, 'executive': 20000, 
+        'gold': 30000, 'platinum': 35000, 'vip': 45000, 'vvip': 50000
+      };
+
+      const monthlyData: Record<string, { revenue: number, bookings: number }> = {};
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      months.forEach(m => monthlyData[m] = { revenue: 0, bookings: 0 });
+
+      bookings.forEach(b => {
+        const month = dayjs(b.dateTime).format('MMM');
+        const serviceKey = Object.keys(packagePrices).find(k => b.service.toLowerCase().includes(k)) || 'standard';
+        monthlyData[month].revenue += packagePrices[serviceKey] || 0;
+        monthlyData[month].bookings += 1;
+      });
+
+      const formatted = Object.entries(monthlyData).map(([month, data]) => ({ 
+        month, 
+        revenue: data.revenue,
+        bookings: data.bookings
+      }));
+      return res.json(formatted);
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Get revenue by package (RevenueByPackage interface)
+   */
+  async getRevenueByPackage(req: Request, res: Response) {
+    try {
+      const bookings = await prisma.booking.findMany({ where: { status: 'confirmed' } });
+      
+      const packagePrices: Record<string, number> = {
+        'standard': 10000, 'economy': 15000, 'executive': 20000, 
+        'gold': 30000, 'platinum': 35000, 'vip': 45000, 'vvip': 50000
+      };
+
+      const stats: Record<string, { revenue: number, bookings: number }> = {};
+      
+      bookings.forEach(b => {
+        const serviceKey = Object.keys(packagePrices).find(k => b.service.toLowerCase().includes(k)) || 'standard';
+        if (!stats[serviceKey]) stats[serviceKey] = { revenue: 0, bookings: 0 };
+        stats[serviceKey].revenue += packagePrices[serviceKey] || 0;
+        stats[serviceKey].bookings += 1;
+      });
+
+      const formatted = Object.entries(stats).map(([pkg, data]) => ({
+        package: pkg,
+        revenue: data.revenue,
+        bookings: data.bookings,
+        avgValue: data.bookings > 0 ? data.revenue / data.bookings : 0
+      }));
+      return res.json(formatted);
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Get seasonal trends (SeasonalTrend interface)
+   */
+  async getSeasonalTrends(req: Request, res: Response) {
+    try {
+      const currentYear = dayjs().year();
+      const lastYear = currentYear - 1;
+      
+      const bookings = await prisma.booking.findMany({
+        where: {
+          status: 'confirmed',
+          dateTime: {
+            gte: dayjs(`${lastYear}-01-01`).toDate()
+          }
+        }
+      });
+
+      const trends: Record<string, { currentYear: number, lastYear: number }> = {};
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      months.forEach(m => trends[m] = { currentYear: 0, lastYear: 0 });
+
+      bookings.forEach(b => {
+        const date = dayjs(b.dateTime);
+        const month = date.format('MMM');
+        const year = date.year();
+        
+        if (year === currentYear) trends[month].currentYear += 1;
+        else if (year === lastYear) trends[month].lastYear += 1;
+      });
+
+      const formatted = Object.entries(trends).map(([month, data]) => ({
+        month,
+        currentYear: data.currentYear,
+        lastYear: data.lastYear
+      }));
+      return res.json(formatted);
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  /**
+   * Get Sentiment Analysis Stats
+   */
+  async getSentimentAnalysis(req: Request, res: Response) {
+    try {
+      const thirtyDaysAgo = dayjs().subtract(30, 'day').toDate();
+      const scores = await prisma.sentimentScore.findMany({
+        where: { createdAt: { gte: thirtyDaysAgo } },
+        include: { customer: { select: { name: true } } },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const distribution = {
+        very_positive: scores.filter(s => s.sentiment === 'very_positive').length,
+        positive: scores.filter(s => s.sentiment === 'positive').length,
+        neutral: scores.filter(s => s.sentiment === 'neutral').length,
+        negative: scores.filter(s => s.sentiment === 'negative').length,
+        very_negative: scores.filter(s => s.sentiment === 'very_negative').length,
+      };
+
+      // Group by day for the last 7 days
+      const sevenDaysAgo = dayjs().subtract(7, 'day').startOf('day');
+      const trendMap = new Map<string, { positive: number; neutral: number; negative: number; total: number; scoreSum: number }>();
+      for (let i = 0; i < 7; i++) {
+        trendMap.set(sevenDaysAgo.add(i, 'day').format('YYYY-MM-DD'), { positive: 0, neutral: 0, negative: 0, total: 0, scoreSum: 0 });
+      }
+      for (const s of scores) {
+        const day = dayjs(s.createdAt).format('YYYY-MM-DD');
+        const bucket = trendMap.get(day);
+        if (!bucket) continue;
+        bucket.total++;
+        bucket.scoreSum += s.score;
+        if (s.sentiment === 'positive' || s.sentiment === 'very_positive') bucket.positive++;
+        else if (s.sentiment === 'negative' || s.sentiment === 'very_negative') bucket.negative++;
+        else bucket.neutral++;
+      }
+      const recentTrends = Array.from(trendMap.entries()).map(([date, b]) => ({
+        date,
+        positive: b.positive,
+        neutral: b.neutral,
+        negative: b.negative,
+        avgScore: b.total > 0 ? b.scoreSum / b.total : 0,
+      }));
+
+      // Customers whose most recent sentiment reading is negative/very_negative
+      const latestByCustomer = new Map<string, typeof scores[number]>();
+      for (const s of scores) latestByCustomer.set(s.customerId, s); // scores is ascending, so last write wins = most recent
+      const customersNeedingAttention = Array.from(latestByCustomer.values())
+        .filter(s => s.sentiment === 'negative' || s.sentiment === 'very_negative')
+        .map(s => ({ customerId: s.customerId, name: s.customer?.name || 'Unknown', score: s.score, sentiment: s.sentiment }));
+
+      return res.json({
+        total: scores.length,
+        averageScore: scores.length > 0 ? scores.reduce((a, b) => a + b.score, 0) / scores.length : 0,
+        distribution: {
+          ...distribution,
+          percentages: {
+            positive: scores.length > 0 ? ((distribution.positive + distribution.very_positive) / scores.length) * 100 : 0
+          }
+        },
+        recentTrends,
+        customersNeedingAttention
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  }
+}
+
+export const analyticsController = new AnalyticsController();

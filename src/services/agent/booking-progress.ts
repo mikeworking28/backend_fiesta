@@ -225,6 +225,6 @@ return buildBookingProposalConfirmation(
   result.depositAmount
 );
   } catch {
-    return 'The team will help verify these booking details before any payment prompt is sent.';
+    return 'The team will help verify these booking details before payment instructions are shared.';
   }
 }

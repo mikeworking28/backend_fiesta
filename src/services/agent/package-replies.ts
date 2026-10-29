@@ -188,7 +188,7 @@ export async function getPackageSelectionReply(customerId: string, userMessage: 
       deposit = getDepositForPackage(selectedPackage);
     } catch {
       console.warn('Unable to resolve package-selection deposit.');
-      return `${selectedPackage.name} works for ${dayjs(draft.date).format('dddd, MMMM D')} at ${dayjs(draft.dateTimeIso).format('h:mm A')}. The studio team will confirm the deposit before any payment prompt is sent.`;
+      return `${selectedPackage.name} works for ${dayjs(draft.date).format('dddd, MMMM D')} at ${dayjs(draft.dateTimeIso).format('h:mm A')}. The studio team will confirm the deposit before payment instructions are shared.`;
     }
     await prisma.bookingDraft.update({
       where: { customerId },

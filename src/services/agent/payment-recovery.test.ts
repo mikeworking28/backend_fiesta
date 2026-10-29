@@ -163,6 +163,9 @@ test('classifies the payment phrases from the Joan run', () => {
     ['what is the payment details', 'payment_details'],
     ['what are the payment details?', 'payment_details'],
     ['where do I pay?', 'payment_details'],
+    ['Where am I sending the money to?', 'payment_details'],
+    ['Where do I send the deposit?', 'payment_details'],
+    ['Where am I supposed to send the money?', 'payment_details'],
   ] as const) {
     assert.equal(classifyPaymentMessage(message), kind, message);
   }
@@ -179,7 +182,7 @@ test('payment-detail questions use the official Till without resending or invoki
     },
   });
 
-  const reply = await say('what is the payment details');
+  const reply = await say('Where am I sending the money to?');
 
   assert.match(reply, /Buy Goods Till Number 670241/);
   assert.match(reply, /Ksh 2,000/);

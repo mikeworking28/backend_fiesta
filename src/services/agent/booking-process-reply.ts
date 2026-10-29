@@ -7,7 +7,7 @@ export function isBookingProcessRequest(userMessage: string): boolean {
 }
 
 export async function buildBookingProcessReply(this: any): Promise<string> {
-  let depositText = 'We quote your deposit once you choose an edition; the studio team will confirm it before any payment prompt is sent.';
+  let depositText = 'We quote your deposit once you choose an edition; the studio team will confirm it before payment instructions are shared.';
   let editionCount: number | null = null;
   let location = '4th Avenue Parklands, Diamond Plaza Annex, 2nd Floor, Nairobi';
 
