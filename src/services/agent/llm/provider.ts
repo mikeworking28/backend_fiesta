@@ -87,6 +87,119 @@ export type ChatProvider =
   | 'gemini2'
   | 'openrouter';
 
+  type GroqRateLimitSnapshot = {
+  provider: 'groq' | 'groq2';
+  model: string;
+  observedAt: string;
+  requestsPerDay: {
+    limit: number | null;
+    remaining: number | null;
+    reset: string | null;
+  };
+  tokensPerMinute: {
+    limit: number | null;
+    remaining: number | null;
+    reset: string | null;
+  };
+};
+
+const groqRateLimitSnapshots = new Map<
+  'groq' | 'groq2',
+  GroqRateLimitSnapshot
+>();
+
+function getResponseHeader(
+  headers: any,
+  name: string,
+): string | null {
+  const value =
+    headers?.get?.(name) ??
+    headers?.[name.toLowerCase()] ??
+    headers?.[name];
+
+  return value == null ? null : String(value);
+}
+
+function getNumericHeader(
+  headers: any,
+  name: string,
+): number | null {
+  const value = getResponseHeader(headers, name);
+
+  if (value === null || value.trim() === '') {
+    return null;
+  }
+
+  const number = Number(value);
+
+  return Number.isFinite(number) ? number : null;
+}
+
+function recordGroqRateLimits(
+  provider: ChatProvider,
+  model: string,
+  headers: any,
+): void {
+  if (provider !== 'groq' && provider !== 'groq2') {
+    return;
+  }
+
+  const snapshot: GroqRateLimitSnapshot = {
+    provider,
+    model,
+    observedAt: new Date().toISOString(),
+
+    requestsPerDay: {
+      limit: getNumericHeader(
+        headers,
+        'x-ratelimit-limit-requests',
+      ),
+      remaining: getNumericHeader(
+        headers,
+        'x-ratelimit-remaining-requests',
+      ),
+      reset: getResponseHeader(
+        headers,
+        'x-ratelimit-reset-requests',
+      ),
+    },
+
+    tokensPerMinute: {
+      limit: getNumericHeader(
+        headers,
+        'x-ratelimit-limit-tokens',
+      ),
+      remaining: getNumericHeader(
+        headers,
+        'x-ratelimit-remaining-tokens',
+      ),
+      reset: getResponseHeader(
+        headers,
+        'x-ratelimit-reset-tokens',
+      ),
+    },
+  };
+
+  const hasQuotaData = [
+    snapshot.requestsPerDay.limit,
+    snapshot.requestsPerDay.remaining,
+    snapshot.tokensPerMinute.limit,
+    snapshot.tokensPerMinute.remaining,
+  ].some((value) => value !== null);
+
+  // Do not overwrite a valid snapshot with an empty response.
+  if (!hasQuotaData) {
+    return;
+  }
+
+  groqRateLimitSnapshots.set(provider, snapshot);
+}
+
+export function getGroqRateLimitSnapshots():
+  GroqRateLimitSnapshot[] {
+  return Array.from(groqRateLimitSnapshots.values());
+}
+
 const providerCooldownUntil =
   new WeakMap<Pick<OpenAI, 'chat'>, number>();
 
@@ -458,11 +571,22 @@ export async function createChatCompletion(
           null,
       });
 
-      const response =
-        await client.chat.completions.create({
-          ...requestParams,
-          model,
-        } as any);
+     const completionRequest =
+  client.chat.completions.create({
+    ...requestParams,
+    model,
+  } as any);
+
+const {
+  data: response,
+  response: rawResponse,
+} = await completionRequest.withResponse();
+
+recordGroqRateLimits(
+  provider,
+  model,
+  rawResponse.headers,
+);
 
       await recordModelUsage(
         provider,

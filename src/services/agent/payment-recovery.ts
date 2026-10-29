@@ -153,6 +153,7 @@ export function classifyPaymentMessage(message: string): PaymentMessageKind | nu
   if (/\b(?:no|not|don'?t|do not|wait|hold on|later)\b/.test(text)) return null;
   if (/\b(?:payment details?|payment options?|till number|paybill number)\b/.test(text)
     || /\b(?:what\s+(?:is|are)\s+(?:the\s+)?(?:payment\s+details?|till\s+number|paybill\s+number|m-?pesa\s+number)|where\s+(?:do|should|can)\s+i\s+pay|how\s+(?:do|can)\s+i\s+pay|which\s+(?:till|paybill|number)\s+(?:should|do)\s+i\s+use)\b/.test(text)) return 'payment_details';
+  if (/\bwhere\s+(?:(?:am|are|will)\s+i\s+)?(?:(?:supposed|meant)\s+to\s+)?(?:send|sending|pay|paying)\b[^?!.]{0,60}\b(?:money|deposit|payment|it|that)\b|\bwhere\s+(?:do|should|can)\s+i\s+send\b/.test(text)) return 'payment_details';
   if (/\bre-?send\b|\bre-?try\b|\btry (?:it |that |this )?again\b|\b(?:send|do|push) (?:it |that |this |the prompt |the payment |the request )?again\b|\b(?:one more|last|another) time\b|\bnew (?:prompt|one|request)\b/.test(text)) return 'resend';
   if (/^(?:yes+|yeah|yep|yea|ndio|confirm(?:ed)?|go[\s-]?ahead|proceed|please do|sure)\b/.test(text)
     || /\b(?:finish|complete|make|do) (?:the |my |this )?payment\b|\bsend (?:it|the prompt)\b|\bpay (?:now|it|the deposit)\b|^(?:let'?s|let us) do it(?: then)?$/.test(text)) return 'consent';

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import prisma from '../config/prisma';
 import dayjs from 'dayjs';
-import { getGroqCooldownUntil } from '../services/agent/agent.service';
+import { getGroqCooldownUntil, getGroqRateLimitSnapshots } from '../services/agent/agent.service';
 
 export class AnalyticsController {
 
@@ -60,11 +60,145 @@ export class AnalyticsController {
         if (day) day[row.provider] += row.totalTokens;
       }
 
-      return res.json({ days, allTimeTokens: customerTotals._sum.totalTokensUsed || 0, customerUsage, summary, daily, recent: rows.slice(0, 12), groqCooldownUntil: getGroqCooldownUntil() });
+      const todayStart = new Date();
+todayStart.setUTCHours(0, 0, 0, 0);
+
+const todayModelMap = new Map<
+  string,
+  {
+    model: string;
+    provider: string;
+    calls: number;
+    failures: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  }
+>();
+
+for (const row of rows) {
+  if (row.createdAt < todayStart) continue;
+
+  const model = row.model || 'Unknown model';
+  const key = `${row.provider}:${model}`;
+
+  const current = todayModelMap.get(key) || {
+    model,
+    provider: row.provider,
+    calls: 0,
+    failures: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+  };
+
+  current.calls += 1;
+
+  if (row.status !== 'success') {
+    current.failures += 1;
+  }
+
+  current.inputTokens += row.inputTokens;
+  current.outputTokens += row.outputTokens;
+  current.totalTokens += row.totalTokens;
+
+  todayModelMap.set(key, current);
+}
+
+const todayByModel = Array.from(todayModelMap.values()).sort(
+  (a, b) => b.totalTokens - a.totalTokens,
+);
+
+      return res.json({
+  days,
+  allTimeTokens: customerTotals._sum.totalTokensUsed || 0,
+  customerUsage,
+  summary,
+  daily,
+  todayByModel,
+  recent: rows.slice(0, 12),
+  groqRateLimits: getGroqRateLimitSnapshots(),
+  groqCooldownUntil: getGroqCooldownUntil(),
+});
     } catch (error: any) {
       return res.status(500).json({ error: 'Unable to load model usage' });
     }
   }
+
+  /**
+ * Get per-customer token usage for a selected UTC date.
+ */
+async getCustomerDailyTokenUsage(req: Request, res: Response) {
+  try {
+    const dateParam = String(req.query.date ?? '');
+
+    // Require an exact YYYY-MM-DD date.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+      return res.status(400).json({
+        error: 'A valid date in YYYY-MM-DD format is required.',
+      });
+    }
+
+    const date = new Date(`${dateParam}T00:00:00.000Z`);
+
+    // Reject invalid dates, including dates that JavaScript normalizes.
+    if (
+      Number.isNaN(date.getTime()) ||
+      date.toISOString().slice(0, 10) !== dateParam
+    ) {
+      return res.status(400).json({
+        error: 'Invalid calendar date.',
+      });
+    }
+
+    const records = await prisma.customerDailyTokenUsage.findMany({
+      where: {
+        date,
+        totalTokens: { gt: 0 },
+      },
+      select: {
+        customerId: true,
+        totalTokens: true,
+        customer: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        totalTokens: 'desc',
+      },
+    });
+
+    const customers = records.map((record) => ({
+      id: record.customer.id,
+      name: record.customer.name || 'Unnamed customer',
+      totalTokens: record.totalTokens,
+    }));
+
+    const totalTokens = customers.reduce(
+      (sum, customer) => sum + customer.totalTokens,
+      0,
+    );
+
+    return res.json({
+      date: dateParam,
+      totalTokens,
+      customerCount: customers.length,
+      customers,
+    });
+  } catch (error) {
+    console.error(
+      'Failed to load daily customer token usage:',
+      error,
+    );
+
+    return res.status(500).json({
+      error: 'Unable to load daily customer token usage.',
+    });
+  }
+}
 
   /**
    * Get AI performance metrics from persisted observability data
@@ -166,7 +300,7 @@ export class AnalyticsController {
    * AI observability rollup: latency percentiles, strategy mix, fallback and
    * circuit-breaker usage, escalations by type, and a daily series.
    * Backs the single "AI Observability" view proposed in
-   * docs/GAPS_AND_STRATEGIC_OPPORTUNITIES.md §1 (Tier 1 + strategy hit rates).
+   * docs/GAPS_AND_STRATEGIC_OPPORTUNITIES.md Â§1 (Tier 1 + strategy hit rates).
    */
   async getObservability(req: Request, res: Response) {
     try {
