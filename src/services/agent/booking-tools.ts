@@ -3,7 +3,7 @@ import { bookingService } from '../booking/booking.service';
 import { bookingDraftService } from '../booking/booking-draft.service';
 import { googleCalendarService } from '../calendar/calendar.service';
 import { invoiceService } from '../invoice/invoice.service';
-import { mpesaService } from '../payment/mpesa.service';
+import { TILL_NAME, TILL_NUMBER } from './till-payment';
 import { SERVICE_DURATIONS, DEFAULT_DURATION, MINIMUM_BOOKING_DEPOSIT, PACKAGE_NAMES_FOR_EXTRACTION } from '../../config/constants';
 import { notifyAdmin } from '../notifications/notification.service';
 import { businessDay, bookingDateFacts, inBusinessTimezone } from '../../utils/time';
@@ -95,6 +95,10 @@ export async function executeConfirmBookingTool(
   initialDraftStep: string | undefined,
   expectedDeposit: number | null
 ) {
+  // Till flow: she is told how to pay, then sends her M-Pesa message. Nothing is pushed to her phone.
+  if (initialDraftStep === 'awaiting_payment_message') {
+    throw new Error('She has already confirmed and was given the payment details. Do not call confirm_booking again; wait for her M-Pesa message or transaction code.');
+  }
   if (initialDraftStep !== 'awaiting_confirmation') {
     throw new Error('No pending booking proposal from a prior message. Call propose_booking first and wait for the customer to explicitly confirm on their own next message before calling confirm_booking.');
   }
@@ -106,7 +110,7 @@ export async function executeConfirmBookingTool(
 
   const serviceKey = Object.keys(SERVICE_DURATIONS).find((key) => draft.service?.toLowerCase().includes(key));
   if (!serviceKey) {
-    throw new Error(`The pending booking's package "${draft.service || 'unknown'}" isn't recognised, so the deposit can't be worked out. Do not start payment; ask the studio team to check the package.`);
+    throw new Error('The pending booking\'s package "' + (draft.service || 'unknown') + '" isn\'t recognised, so the deposit can\'t be worked out. Do not share payment details; ask the studio team to check the package.');
   }
   if (!draft.date || !draft.time) {
     throw new Error('The pending booking is missing its date or time. Ask the customer to start the booking again.');
@@ -118,68 +122,31 @@ export async function executeConfirmBookingTool(
     draft.id
   );
   if (slotsResult?.status === 'closed') {
-    throw new Error(`The studio is closed on ${draft.date}. Do not start payment for this booking.`);
+    throw new Error('The studio is closed on ' + draft.date + '. Do not share payment details for this booking.');
   }
   const availableSlots: string[] = Array.isArray(slotsResult) ? slotsResult : [];
   if (!availableSlots.includes(draft.time)) {
-    throw new Error(`The proposed time ${draft.time} on ${draft.date} is no longer available. Do not start payment; ask the customer to choose another time.`);
+    throw new Error('The proposed time ' + draft.time + ' on ' + draft.date + ' is no longer available. Do not share payment details; ask the customer to choose another time.');
   }
 
   const depositAmount = this.getDepositForPackage(await this.getPackageForDeposit(draft.service || ''));
   if (expectedDeposit === null || expectedDeposit !== depositAmount) {
-    throw new Error('The package deposit no longer matches the amount in the customer-visible proposal. Do not start payment; prepare a new proposal and ask for confirmation again.');
-  }
-   // Attempts are counted as version - 1, but slot saves also bump version.
-  // Before the first prompt, reset to a clean baseline so those bumps never count.
-  let baseVersion = draft.version;
-  const priorPayment = await prisma.payment.findFirst({ where: { bookingDraftId: draft.id }, select: { id: true } });
-  if (!priorPayment && Number.isInteger(draft.version) && draft.version > 1) {
-    const reset = await prisma.bookingDraft.updateMany({
-      where: { id: draft.id, step: 'awaiting_confirmation', version: draft.version },
-      data: { version: 1 },
-    });
-    if (!reset.count) {
-      throw new Error('The booking changed while confirming. Ask the customer to confirm again.');
-    }
-    baseVersion = 1;
-  }
-  if (draftVersion({ version: baseVersion }) - 1 >= MAX_PAYMENT_ATTEMPTS) {
-    throw Object.assign(new Error('The M-Pesa prompt limit for this booking has been reached. Do not send another prompt; the studio team will follow up.'), { code: PAYMENT_ATTEMPTS_EXHAUSTED });
+    throw new Error('The package deposit no longer matches the amount in the customer-visible proposal. Do not share payment details; prepare a new proposal and ask for confirmation again.');
   }
 
-  await bookingDraftService.markPaymentPending(customerId, baseVersion);
+  // Claims the draft once: a duplicate "yes" fails the version check and does nothing.
+  await bookingDraftService.markAwaitingPaymentMessage(customerId, draft.version);
 
-  try {
-    await prisma.payment.upsert({
-      where: { bookingDraftId: draft.id },
-      update: {
-        amount: depositAmount,
-        status: 'pending',
-        checkoutRequestId: null,
-        updatedAt: new Date()
-      },
-      create: {
-        bookingDraftId: draft.id,
-        amount: depositAmount,
-        phone: customerId,
-        status: 'pending',
-        checkoutRequestId: null
-      }
-    });
-
-    return {
-      success: true,
-      draftId: draft.id,
-      depositAmount,
-      service: draft.service,
-      date: draft.date,
-      time: draft.time,
-      tillNumber: '670241'
-    };
-  } catch (error: any) {
-    console.error('Failed to record pending booking payment:', error);
-    throw new Error(`We couldn't set up the payment details (${error.message}). Please try confirming again.`);
-  }
+  return {
+    success: true,
+    draftId: draft.id,
+    depositAmount,
+    service: draft.service,
+    date: draft.date,
+    time: draft.time,
+    till: TILL_NUMBER,
+    tillName: TILL_NAME,
+  };
 }
 
 export async function getPackageForDeposit(packageName?: string): Promise<{ name: string; deposit: number | null } | null> {

@@ -91,6 +91,7 @@ import { SERVICE_DURATIONS, DEFAULT_DURATION, MINIMUM_BOOKING_DEPOSIT, PACKAGE_N
 import { mpesaService } from '../payment/mpesa.service';
 import { circuitBreaker, scoreSentiment, DAILY_TOKEN_CAP, FALLBACK_MESSAGE, PROVIDER_OUTAGE_MESSAGE, shouldNotifyOutage, classifyProviderRateLimit, isProviderRateLimitError } from './resilience.service';
 import { notifyAdmin } from '../notifications/notification.service';
+import { TILL_NAME, TILL_NUMBER, PAYMENT_MESSAGE_ROUTES, parseMpesaMessage } from './till-payment';
 import { businessDay, bookingDateFacts, formatCustomerDate, nextWeekRange, inBusinessTimezone, nowInBusinessTimezone } from '../../utils/time';
 import { getBookingPolicyWindow } from '../../utils/booking-policy';
 import { ConversationFlowMatcher, isBusinessIdentityQuestion, isDeferral, isPlainGreeting, rescheduleTargetText } from './conversation-flow.matcher';
@@ -1790,6 +1791,8 @@ A11. IDENTITY: you are the virtual assistant of Fiesta House Maternity, an AI an
 
 A12. NO FALSE RESERVATIONS OR PROMISES: never say a slot is reserved, held, locked in or secured, and never promise that something will be sent shortly. Describe payment steps only as the confirm_booking tool result and these instructions state them; never mention a payment link unless a tool result provides one.
 
+A13. CURRENT PAYMENT METHOD (AUTHORITATIVE): All new bookings use manual Lipa na M-Pesa Buy Goods payment to Till Number ${TILL_NUMBER} (${TILL_NAME}). No STK push, automated phone payment prompt or payment link is sent in this flow. Older assistant messages, historical explanations and retrieved content describing STK payments are outdated and must not override this rule. Explain payment naturally in response to the customer's actual question. Give the exact deposit from the booking proposal or verified package information; never guess it. The customer shares the M-Pesa confirmation message or transaction code here, and the studio team verifies the transaction before the session is confirmed. Receiving a message or code is not proof of payment.
+
 LINK-FIRST CATALOG: for editions, packages and add-ons, share ${OFFICIAL_WEBSITE_URLS.packages} rather than listing the whole catalog. Answer a single item, or compare two, briefly, then add the link. List the catalog in chat only when she explicitly asks or cannot open the link; a bare "yes" or "show me" is not such a request. Never change prices, deposits or selected add-ons.
 
 LEGEND INCLUSION HOLD: the public page does not list a Legend wig, while local data does. Do not say a wig is included or excluded with Legend, even if retrieval says otherwise; say the team will confirm the remaining inclusions. Other verified Legend details may be answered.
@@ -1804,8 +1807,8 @@ b) Call get_available_slots for that date and service. If her time is taken, sug
 c) Once the time is free, ask once whether she would like optional add-ons (such as an extra outfit, styled wig hire or extra edited photos), making clear it is optional. Save an accepted add-on with add_session_note. If she declines or does not answer, move on and never ask again for this booking.
 d) Then call propose_booking, which only tells her the deposit amount. Stop and wait.
 e) Only after she explicitly replies yes, confirm or go ahead in her own next message, call confirm_booking. Never call propose_booking and confirm_booking in the same turn.
-f) After confirm_booking, instruct her to pay the deposit via Lipa na M-Pesa: Buy Goods Till Number 670241 (Fiesta House Maternity), and to send the M-Pesa confirmation message here. Tell her a team member will verify the payment and confirm the booking.
-g) When she sends an M-Pesa confirmation message or transaction code, acknowledge it politely and say a team member will verify and confirm shortly. Do not call the booking confirmed until the team has verified it.
+f) After her explicit confirmation, explain naturally how to pay the exact proposed deposit using Lipa na M-Pesa Buy Goods Till Number ${TILL_NUMBER} (${TILL_NAME}). Ask her to paste or forward the M-Pesa confirmation message or transaction code here. No STK push, automated phone prompt or payment link is sent. The booking is confirmed only after the team verifies the transaction.
+g) When she sends the M-Pesa confirmation message or transaction code, acknowledge it naturally and explain that the team will verify it. Never treat the submitted message or code as verified payment, and never claim that the session is confirmed before verification.
 
 B3. RESCHEDULING IS TWO STEPS: if she wants to reschedule without giving a specific new date and time, call no tool and ask for them. Once she has stated them, call propose_reschedule (it changes nothing yet), then stop and wait. Call confirm_reschedule only after she explicitly replies yes or confirm in her own later message, never in the same turn.
 
@@ -1838,7 +1841,7 @@ D0. WARMTH AND INTENT: behave like a smart, attentive host, not a script. Work o
 - Feelings or personal context (body size, nerves, due date, excitement): acknowledge with one sincere, specific sentence before any information; do not assume she wants advice or a booking.
 - Studio question: answer it directly from verified information.
 - Booking or a change to one: follow [A] and [B] exactly.
-Use her first name naturally when known, without forcing it into every reply. Mirror the language she writes in. Vary your wording so you never sound like a template. Warm and gracious, never gushing, never curt.
+Use her first name naturally when known, without forcing it into every reply. Mirror the language she writes in. Vary your wording so you never sound like a template. Warm and gracious, never gushing, never curt. Interest ("that seems interesting", "I like it") is not a booking request: respond to it warmly and let her lead, offering to help her choose or answer questions rather than asking for a date. If a request is ambiguous (for example "suggest for me"), ask one short question about what she would like suggested instead of assuming a booking. Never open a reply with her name alone. In sentences write edition names as "the Muse" or "the Bloom", not in capitals.
 
 D1. ABOUT YOU: if she asks who you are or what you do, say you are Fiesta House Maternity's virtual assistant and briefly what you can help with (sessions and editions, add-ons, availability, bookings). If she may mean the studio, introduce it too. Adapt to her wording and give no technical detail about AI or software unless asked.
 
@@ -1982,8 +1985,15 @@ D9. SENSITIVE DISCLOSURES: when she shares body size, health, pregnancy worries 
       paymentSummary = paidPayment
         ? `PAYMENT SUCCEEDED via M-Pesa${paidPayment.mpesaReceipt ? ` (Receipt: ${paidPayment.mpesaReceipt})` : ''}. The booking is confirmed. Do NOT claim the payment is pending.`
         : 'The booking is confirmed, but no successful payment is recorded. Do not say the deposit was paid or received; tell the customer the studio team can verify payment status.';
-    } else if (draftBeforeThisTurn?.step === 'payment_pending') {
-      paymentSummary = 'A deposit payment step is open for the booking draft. Do not say whether a prompt is pending, failed, cancelled or paid, and do not offer to resend it; payment questions are answered from payment records.';
+    } else if (draftBeforeThisTurn?.step === 'awaiting_payment_message') {
+      let depositText = 'the deposit amount in her proposal';
+      try {
+        const deposit = this.getDepositForPackage(await this.getPackageForDeposit(draftBeforeThisTurn.service || ''));
+        depositText = 'KSh ' + deposit.toLocaleString();
+      } catch {
+        // keep the generic wording
+      }
+      paymentSummary = 'She has confirmed her booking proposal. The deposit (' + depositText + ') is paid via Lipa na M-Pesa, Buy Goods, Till Number ' + TILL_NUMBER + ' (' + TILL_NAME + '). We are waiting for her to send the M-Pesa confirmation message or transaction code. If you have not yet told her how to pay, do so now in your own words; otherwise answer her questions. When she sends the message or code, tell her warmly that the team will verify it and confirm her session. Never say the payment is received or the booking confirmed until the team has verified it.';
     }
 
     // 1b. Long-term memory beyond the last 10 messages of raw history
@@ -2074,7 +2084,7 @@ ${contextString}`;
       : fullSystemPrompt.replace(
           /\[B\] TOOL-USE WORKFLOW[\s\S]*?(?=\[C\] BUSINESS KNOWLEDGE)/,
           mentionsWorkflowTopic
-            ? '[B] INFORMATION-ONLY WORKFLOW GUIDANCE: No booking or action tools are available on this turn. Answer booking-process and appointment questions in plain text from verified context. Do not call or imply that a booking, reschedule, cancellation, payment, or delivery action occurred. If asked how booking works, explain the sequence briefly: choose an edition, provide a preferred date and time, check availability, discuss optional add-ons, review the deposit proposal, then provide M-Pesa instructions only after explicit confirmation. For appointment details, answer from existing booking information rather than treating the question as a reschedule request. Follow the platform capability rules above.\n\n'
+            ? `[B] INFORMATION-ONLY WORKFLOW GUIDANCE: No booking or action tools are available on this turn. Answer booking, payment and appointment questions naturally using verified context. Do not call or imply that a booking, reschedule, cancellation, payment or delivery action occurred. The current payment method for new bookings is manual Lipa na M-Pesa Buy Goods Till Number ${TILL_NUMBER} (${TILL_NAME}); no STK push, automated phone prompt or payment link is sent. Explain the process in your own words according to what the customer is asking. The exact deposit comes from the booking proposal or verified package information. After the customer has accepted the proposal, explain how to pay the deposit and ask her to share the M-Pesa confirmation message or transaction code here. The studio team verifies payment before confirming the session. A submitted message is not proof of payment. Never invent a deposit amount or say a slot is secured before payment verification. For appointment details, answer from existing booking information rather than treating the question as a reschedule request. Follow the platform capability rules above.\n\n`
             : '[B] Detailed tool-use workflows omitted for this informational turn.\n\n',
         );
 
@@ -2413,7 +2423,7 @@ ${contextString}`;
                 const result = await this.executeConfirmBookingTool(customerId, initialDraftStep, expectedDeposit);
                 if (Number.isInteger(result.depositAmount) && result.depositAmount > 0) verifiedToolDeposits.add(result.depositAmount);
                 confirmedActionThisTurn = true;
-                exactProposalReply = `To complete booking ${result.service} on ${result.date} at ${result.time}, please pay the deposit of Ksh ${result.depositAmount.toLocaleString()} via Lipa na M-Pesa: Buy Goods Till Number 670241 (Fiesta House Maternity). Once paid, please paste or forward the M-Pesa confirmation message here and a team member will confirm your booking.`;
+                exactProposalReply = `To complete booking ${result.service} on ${result.date} at ${result.time}, please pay the deposit of Ksh ${result.depositAmount.toLocaleString()} via Lipa na M-Pesa: Buy Goods Till Number ${result.till} (${result.tillName}). Once paid, please paste or forward the M-Pesa confirmation message here and a team member will confirm your booking.`;
                 toolResponse = `${exactProposalReply} This is DONE - do not call any more booking tools this turn.`;
               }
             }
@@ -2509,11 +2519,23 @@ ${contextString}`;
             }
             else if (functionName === 'get_available_dates') {
               const range = nextWeekAvailability ? nextWeekRange() : args;
-              toolResponse = JSON.stringify(await checkDateRange(range.fromDate, range.toDate, knownService || args.service));
+              // edition-guard-dates
+const editionKey = (value: unknown) => String(value || '').toLowerCase().replace(/^the\s+/, '').replace(/\s+(?:edition|package)$/, '').trim();
+              if (knownService && args.service && !statedSlots.service && editionKey(knownService) !== editionKey(args.service)) {
+                toolResponse = 'ERROR: The stored package for this booking is ' + knownService + ', but you asked about ' + args.service + '. Do not check availability yet; ask her warmly which edition she would like, then continue.';
+              } else {
+                toolResponse = JSON.stringify(await checkDateRange(range.fromDate, range.toDate, knownService || args.service));
+              }
             }
             else if (functionName === 'get_available_slots') {
               const requestedDate = this.getAuthoritativeRequestedDate(userMessage, args.date, extracted.date, history);
-              toolResponse = JSON.stringify(await checkCalendarSlots(requestedDate, knownService || args.service));
+              // edition-guard-slots
+const editionKey = (value: unknown) => String(value || '').toLowerCase().replace(/^the\s+/, '').replace(/\s+(?:edition|package)$/, '').trim();
+              if (knownService && args.service && !statedSlots.service && editionKey(knownService) !== editionKey(args.service)) {
+                toolResponse = 'ERROR: The stored package for this booking is ' + knownService + ', but you asked about ' + args.service + '. Do not check availability yet; ask her warmly which edition she would like, then continue.';
+              } else {
+                toolResponse = JSON.stringify(await checkCalendarSlots(requestedDate, knownService || args.service));
+              }
             } else {
               toolResponse = `ERROR: Tool ${functionName} not found.`;
             }
@@ -2782,6 +2804,15 @@ ${contextString}`;
       ctx.strategyUsed = 'identityQuestion';
       return this.respond(ctx, "I'm the virtual assistant for Fiesta House Maternity, so you're chatting with an AI rather than a person. I can help with our editions, add-ons and bookings, and the studio team is always there when you'd like a person, on 0720 111928.");
     }
+    // Till flow: if she has just sent her M-Pesa message or code, hand it to the team right away,
+    // and keep deterministic routes from hijacking the conversation while we wait for it.
+    const paymentMessageState = await this.captureMpesaMessage(customerId, userMessage, platform);
+    const paymentMessageMode = paymentMessageState !== 'not_waiting';
+    if (paymentMessageState === 'received') {
+      ctx.strategyUsed = 'mpesaPaymentMessage';
+      return this.respond(ctx, 'Thank you. I have received your M-Pesa confirmation. The Fiesta House team will verify the payment and confirm your session once it is verified.');
+    }
+
     if (circuitBreaker.isOpen()) {
       console.log('[AGENT_FLOW] Circuit breaker is open; returning fallback reply.');
       ctx.strategyUsed = 'circuitBreaker';
@@ -2828,6 +2859,7 @@ ${contextString}`;
     this.trackSentiment(customerId, userMessage).catch(err => console.error('Sentiment tracking failed:', err));
 
     for (const route of routes.filter(candidate => candidate.beforeSlotCapture)) {
+      if (paymentMessageMode && !PAYMENT_MESSAGE_ROUTES.has(route.name)) continue; // till-mode:early
       if (!route.when()) continue;
       console.log(`[AGENT_FLOW] route=${route.name}`);
       try {
@@ -2884,6 +2916,7 @@ ${contextString}`;
     // sits at index 0 (familyStyling was there and never ran).
     for (const route of routes) {
       if (route.name === 'scopeBoundary') continue;
+      if (paymentMessageMode && !PAYMENT_MESSAGE_ROUTES.has(route.name)) continue; // till-mode:main
       if (route.beforeSlotCapture) continue;
       if (route.replyMode === 'natural' && naturalAssistantMode) continue;
       if (!route.when()) continue;
@@ -2952,6 +2985,62 @@ ${contextString}`;
       console.warn('[AGENT_FLOW] schema_alert=suppressed reason=cooldown');
     }
     return { reply: SCHEMA_MAINTENANCE_REPLY, outcome: { success: false, isFallback: true, failureReason: 'database_schema_out_of_date' } };
+  }
+
+  /**
+   * Till flow. Returns true while her draft is waiting for her M-Pesa message. When the message
+   * (or a transaction code) arrives, the team is alerted at once with everything we could read from it.
+   */
+  /**
+   * Recognises a customer's M-Pesa confirmation while a Till payment is pending.
+   * Sends the original message and booking details to the existing team escalation system.
+   */
+  private async captureMpesaMessage(
+    customerId: string,
+    userMessage: string,
+    platform: string
+  ): Promise<'not_waiting' | 'waiting' | 'received'> {
+    if (platform !== 'whatsapp' && platform !== 'web') return 'not_waiting';
+
+    try {
+      const draft = await prisma.bookingDraft.findUnique({ where: { customerId } });
+
+      if (draft?.step !== 'awaiting_payment_message') return 'not_waiting';
+
+      const parsed = parseMpesaMessage(userMessage);
+      const hasPaymentDetails =
+        /\b(?:Ksh|KES)\b/i.test(userMessage) ||
+        /\b(?:paid to|sent to|confirmed)\b/i.test(userMessage);
+
+      const looksLikeMpesaReceipt =
+        Boolean(parsed.code) ||
+        (/\bM[\s-]?PESA\b/i.test(userMessage) && hasPaymentDetails) ||
+        (hasPaymentDetails && /\b(?:transaction|receipt)\b/i.test(userMessage));
+
+      if (!looksLikeMpesaReceipt) return 'waiting';
+
+      await this.escalate(
+        customerId,
+        'booking',
+        JSON.stringify({
+          event: 'mpesa_payment_message_received',
+          ...parsed,
+          booking: {
+            service: draft.service,
+            date: draft.date,
+            time: draft.time,
+            name: draft.name,
+          },
+          customerMessage: userMessage.slice(0, 2000),
+          action: 'Verify this transaction against the M-Pesa statement before confirming the booking.',
+        })
+      );
+
+      return 'received';
+    } catch (error) {
+      console.error('[AGENT_FLOW] Could not process an M-Pesa payment message:', error);
+      return 'waiting';
+    }
   }
 
   private async escalateQuotaHandoff(customerId: string, userMessage: string, platform: string): Promise<void> {
@@ -3367,21 +3456,14 @@ ${contextString}`;
       if (expectedDeposit === null || !this.previousMessageRequestsConfirmation(history)) {
         return this.getBookingStatusReply(customerId);
       }
-      let result;
       try {
-        result = await this.executeConfirmBookingTool(customerId, 'awaiting_confirmation', expectedDeposit);
+        await this.executeConfirmBookingTool(customerId, 'awaiting_confirmation', expectedDeposit);
       } catch (error: any) {
-        if (error?.code === PAYMENT_ATTEMPTS_EXHAUSTED) {
-          await this.escalate(customerId, 'booking', `Payment prompt limit reached for ${draft.service || 'the booking'} on ${draft.date || 'unknown date'} ${draft.time || ''}. No further prompts will be sent automatically. Contact the customer to finish the booking.`);
-          return paymentAttemptsExhaustedReply();
-        }
-        if (error?.code === PAYMENT_ALREADY_PENDING) {
-          return this.getPaymentRecoveryReply(customerId, userMessage, 'consent');
-        }
-        throw error;
+        if (error?.code !== PAYMENT_ALREADY_PENDING) throw error;
       }
-      const sessionLabel = result.service ? `your session for ${editionInText(result.service)}` : 'your session';
-      return `To complete booking ${sessionLabel} on ${businessDay(result.date).format('dddd, D MMMM YYYY')} at ${formatCustomerTime(result.time)}, please pay the deposit of Ksh ${result.depositAmount.toLocaleString()} via Lipa na M-Pesa: Buy Goods Till Number 670241 (Fiesta House Maternity). Once paid, please paste or forward the M-Pesa confirmation message here and a team member will confirm your booking.`;
+      // Till flow: her confirmation is recorded and the draft now waits for her M-Pesa message.
+      // Returning null lets the model tell her, in its own words, how to pay (see the payment summary in runAgent).
+      return null;
     }
 
     if (draft.step === 'reschedule_confirm' && this.previousMessageRequestsConfirmation(history)) {

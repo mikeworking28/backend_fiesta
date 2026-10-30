@@ -12,6 +12,13 @@ import { formatCustomerTime } from './replies';
 import { EARLY_SLOT_STEP } from './slot-memory';
 import { CARRY_OVER_PREFIX } from './booking-progress';
 
+function canonicalEditionName(name: string): string {
+  const normalized = name.trim().toUpperCase().replace(/^THE\s+/, '').replace(/\s+PACKAGE$/, '');
+  return PACKAGE_NAMES_FOR_EXTRACTION.find((edition) =>
+    edition.replace(/^THE\s+/, '').toUpperCase() === normalized
+  ) || name.trim().toUpperCase();
+}
+
 export function editionSelectedDateQuestion(name: string): string {
   const title = name.toLowerCase().replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
   return `${title} it is. What date would suit you? You can see everything included here: ${OFFICIAL_WEBSITE_URLS.packages}`;
@@ -33,11 +40,14 @@ export function buildPackageCard(pkg: {
   notes: string | null;
   inclusions?: readonly string[] | null;
 }): string {
+  const canonicalName = canonicalEditionName(pkg.name);
+  const isLegend = canonicalName === 'THE LEGEND';
   const inclusions = pkg.inclusions?.length ? pkg.inclusions
-    : differingInclusionFields(pkg.name, pkg).length === 0 ? SEED_EDITION_INCLUSIONS[pkg.name]?.inclusions : undefined;
+    : differingInclusionFields(canonicalName, pkg).length === 0 ? SEED_EDITION_INCLUSIONS[canonicalName]?.inclusions : undefined;
   if (inclusions) {
-    const visible = pkg.name === 'THE LEGEND' ? inclusions.filter(item => !/\bwig/i.test(item)) : inclusions;
-    return `${pkg.name} - Ksh ${pkg.price.toLocaleString()}\n${visible.map((item) => `- ${item}`).join('\n')}${pkg.name === 'THE LEGEND' ? '\nThe team will confirm the remaining inclusions for you.' : ''}`;
+    const visible = isLegend ? inclusions.filter(item => !/\bwig/i.test(item)) : inclusions;
+    const legendNote = isLegend ? '\nThe team will confirm the remaining inclusions for you.' : '';
+    return `${pkg.name} - Ksh ${pkg.price.toLocaleString()}\n${visible.map((item) => `- ${item}`).join('\n')}${legendNote}`;
   }
   const items: string[] = [];
   if (pkg.duration) items.push(`Session length: ${pkg.duration}`);
@@ -49,7 +59,7 @@ export function buildPackageCard(pkg: {
   }
   if (pkg.styling) items.push('Styling');
 
-  if (pkg.wig && pkg.name !== 'THE LEGEND') {
+  if (pkg.wig && !isLegend) {
     items.push('Styled wig included (quantity to be confirmed)');
   }
 
@@ -66,7 +76,7 @@ export function buildPackageCard(pkg: {
     items.push('Photo mount (size to be confirmed)');
   }
 
-  return `${pkg.name} - Ksh ${pkg.price.toLocaleString()}\n${items.map((item) => `- ${item}`).join('\n')}`;
+  return `${pkg.name} - Ksh ${pkg.price.toLocaleString()}\n${items.map((item) => `- ${item}`).join('\n')}${isLegend ? '\nThe team will confirm the remaining inclusions for you.' : ''}`;
 }
 
 export async function getPackageCatalogReply(_showInclusions = false, userMessage = ''): Promise<string | null> {
@@ -95,9 +105,10 @@ export async function getPackageCatalogReply(_showInclusions = false, userMessag
     const editions = packages.filter((pkg) => PACKAGE_NAMES_FOR_EXTRACTION.some((name) => name === pkg.name));
     if (!editions.length) return null;
     const needsReview = (pkg: typeof editions[number]) => {
-      const differences = differingInclusionFields(pkg.name, pkg);
+      const canonicalName = canonicalEditionName(pkg.name);
+      const differences = differingInclusionFields(canonicalName, pkg);
       if (differences.length) console.warn('Edition fields disagree with seed inclusion reference:', pkg.name, differences.join(', '));
-      return EDITIONS_PENDING_OWNER_CONFIRMATION.includes(pkg.name)
+      return EDITIONS_PENDING_OWNER_CONFIRMATION.includes(canonicalName)
         || differences.length > 0;
     };
     const requested = editions.filter((pkg) => new RegExp(`\\b${pkg.name.replace(/^THE /, '')}\\b`, 'i').test(userMessage));
@@ -105,7 +116,7 @@ export async function getPackageCatalogReply(_showInclusions = false, userMessag
       const edition = requested[0];
       return needsReview(edition)
         ? 'The team will confirm the exact inclusions for you.'
-        : buildPackageCard({ ...edition, inclusions: SEED_EDITION_INCLUSIONS[edition.name]?.inclusions });
+        : buildPackageCard({ ...edition, inclusions: SEED_EDITION_INCLUSIONS[canonicalEditionName(edition.name)]?.inclusions });
     }
     const overview = editions.map((pkg) => needsReview(pkg)
       ? `${pkg.name} - Ksh ${pkg.price.toLocaleString()} | Ask me for details`

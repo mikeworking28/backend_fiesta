@@ -144,6 +144,16 @@ export function isLashesQuestion(message: string): boolean {
   return /\b(?:eye)?lash(?:es)?\b/i.test(message);
 }
 
+export function isStandaloneLashesQuestion(message: string): boolean {
+  if (!isLashesQuestion(message)) return false;
+  const text = message.toLowerCase();
+  const hasSecondIntent =
+    (text.match(/\?/g) || []).length > 1
+    || /\b(?:accessor(?:y|ies)|options?\s+(?:of|for)|what\s+else|what\s+about)\b/i.test(text)
+    || /\b(?:and|also|plus|as\s+well\s+as)\b[\s\S]{0,70}\b(?:what|which|how|do|does|are|is|can|could|makeup|hair|wig|outfit|gown|package|price|cost|deposit|date|session)\b/i.test(text);
+  return !hasSecondIntent;
+}
+
 export function isAdditionsRequest(userMessage: string): boolean {
   const text = userMessage.toLowerCase();
   return /(additions|add[\s-]?ons?\b|extras|extra\s+services|extra\s+photo|extra\s+outfit|extra\s+makeup|digital\s+art|power\s+suit|wig\s+hire|suspending\s+concept|sculpture\s+set|reel\s+pricing|what\s+extras)/.test(text);

@@ -76,14 +76,16 @@ export class BookingService {
 
     // 1b. Fetch active proposal/payment drafts from last 15 minutes as holds.
     const fifteenMinutesAgo = nowInBusinessTimezone().subtract(15, 'minute').toDate();
+    const twoHoursAgo = nowInBusinessTimezone().subtract(2, 'hour').toDate();
     const activeDrafts = await prisma.bookingDraft.findMany({
       where: {
-        step: { in: ['awaiting_confirmation', 'payment_pending'] },
-        updatedAt: {
-          gte: fifteenMinutesAgo
-        },
         dateTimeIso: { not: null },
         ...(excludeDraftId ? { id: { not: excludeDraftId } } : {}),
+        OR: [
+          { step: { in: ['awaiting_confirmation', 'payment_pending'] }, updatedAt: { gte: fifteenMinutesAgo } },
+          // Till flow: she pays outside the chat, so her slot stays held for up to two hours.
+          { step: 'awaiting_payment_message', updatedAt: { gte: twoHoursAgo } },
+        ],
       }
     });
 
