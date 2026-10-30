@@ -16,7 +16,7 @@ import { addonInquiryReply, addonRecipient, addonSelectionClarification, isAddon
 import { ADDON_NOTED_PREFIX, ADDON_BALANCE_REPLY, ADDON_UNCHANGED_REPLY } from './constants';
 import { isCustomerNameQuestion, needsUnchangedReassurance, editionInText } from './reply-voice';
 import { isMissingColumnError } from '../../config/schema-readiness';
-import { DEFERRAL_REPLY, buildBookingPolicyReply, buildHairWigClarificationReply, buildOpeningHoursReply, buildPersonalOutfitReply, buildWalkInReply, familyStylingReply, isHairWigClarificationRequest, isLashesQuestion, isPersonalOutfitQuestion, legacyPackageReply, buildAboutBusinessReply } from './replies';
+import { DEFERRAL_REPLY, buildBookingPolicyReply, buildHairWigClarificationReply, buildOpeningHoursReply, buildPersonalOutfitReply, buildWalkInReply, familyStylingReply, isHairWigClarificationRequest, isStandaloneLashesQuestion, isPersonalOutfitQuestion, legacyPackageReply, buildAboutBusinessReply } from './replies';
 import { alternativeDates, extractStatedSlots, EARLY_SLOT_STEP } from './slot-memory';
 import { CARRY_OVER_PREFIX, STEP_QUESTIONS, alternativeDatesReply } from './booking-progress';
 
@@ -278,7 +278,7 @@ export function createMessageRoutes(
           if (isMissingColumnError(error)) throw error;
           console.error('[AGENT_FLOW] Payment recovery failed:', error);
           return {
-            reply: 'I could not check your payment just now, so I have not sent another prompt. The studio team can help on 0720 111928.',
+            reply: 'I could not check your payment just now. The studio team can help on 0720 111928.',
             outcome: { success: false, isFallback: true, failureReason: String(error?.message || error).slice(0, 200) },
           };
         }
@@ -437,7 +437,7 @@ export function createMessageRoutes(
     {
       name: 'lashes',
       replyMode: 'deterministic',
-      when: () => isLashesQuestion(userMessage),
+      when: () => isStandaloneLashesQuestion(userMessage),
       handle: () => this.getLashesReply(),
     },
     {
@@ -749,7 +749,7 @@ export function createMessageRoutes(
           return {
             reply: error?.code === PAYMENT_PROMPT_UNRECORDED
               ? PAYMENT_PROMPT_UNRECORDED_REPLY
-              : recovery || 'Your booking has not been confirmed. The studio team will help with the deposit prompt.',
+              : recovery || 'Your booking has not been confirmed. The studio team will help you with the deposit.',
             outcome: {
               success: false,
               isFallback: true,
@@ -832,7 +832,7 @@ export function createMessageRoutes(
           const pendingExtrasDecline = isOutage && (platform === 'whatsapp' || platform === 'web')
             && this.isDecliningOptionalAddons(userMessage, history);
           const fallbackReply = pendingExtrasDecline
-            ? 'Noted, no optional extras. Our booking assistant is temporarily unavailable, so I have not sent a deposit proposal or M-Pesa prompt. A team member will follow up to finish your booking.'
+            ? 'Noted, no optional extras. Our booking assistant is temporarily unavailable, so I have not sent a deposit proposal. A team member will follow up to finish your booking.'
             : isOutage
             ? PROVIDER_OUTAGE_MESSAGE
             : 'Sorry, I could not process that request right now. Please try again, or a team member will follow up with you.';

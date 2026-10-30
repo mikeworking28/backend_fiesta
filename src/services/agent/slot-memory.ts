@@ -119,6 +119,7 @@ export const EARLY_SLOT_STEP = 'collecting_slots';
 const PROTECTED_STEPS = [
   'awaiting_confirmation',
   'payment_pending',
+  'awaiting_payment_message',
   'reschedule_confirm',
   'cancel_confirm',
 ];
@@ -450,6 +451,19 @@ function scanStatedSlots(
     }
   }
 
+  // Bare times such as "2.30" or "2:30" (no am/pm) right after we asked for a time.
+  // Studio hours are 9-19, so 9-11 reads as morning, 12 as noon and 1-8 as afternoon.
+  if (!slots.time && !question && /\b(?:what|which) time\b|\btime (?:would|will) (?:suit|work)\b|\bpreferred time\b/i.test(lastAssistant)) {
+    const loose = message.trim().match(/^(?:(?:give me|make it|let'?s (?:do|go with)|i(?:'d| would) like|i want|take|at)\s+)?(\d{1,2})\s*[.:]\s*(\d{2})[.!]*$/i);
+    if (loose) {
+      const rawHour = Number(loose[1]);
+      const minute = Number(loose[2]);
+      if (rawHour >= 1 && rawHour <= 12 && minute < 60) {
+        const hour = rawHour >= 9 && rawHour <= 11 ? rawHour : rawHour === 12 ? 12 : rawHour + 12;
+        slots.time = String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0');
+      }
+    }
+  }
   return { slots, invalidDate };
 }
 
